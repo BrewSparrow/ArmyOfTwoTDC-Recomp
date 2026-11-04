@@ -1,0 +1,805 @@
+diff --git a/src/audio/audio_system.cpp b/src/audio/audio_system.cpp
+index 7a711a8..3a6800a 100644
+--- a/src/audio/audio_system.cpp
++++ b/src/audio/audio_system.cpp
+@@ -9,6 +9,8 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <chrono>
++#include <algorithm>
+ #include <rex/assert.h>
+ #include <rex/audio/audio_driver.h>
+ #include <rex/audio/audio_system.h>
+@@ -40,6 +42,8 @@ REXCVAR_DEFINE_INT32(
+ // and let the normal AudioSystem handling take it, to prevent duplicate
+ // implementations. They can be found in xboxkrnl_audio_xma.cc
+ 
++REXCVAR_DECLARE(bool, ao2dc_audio_record);
++
+ namespace rex::audio {
+ 
+ namespace {
+@@ -146,8 +150,33 @@ void AudioSystem::WorkerThreadMain() {
+         }
+         SCOPE_profile_cpu_i("apu", "rex::audio::AudioSystem->client_callback");
+         uint64_t args[] = {client_callback_arg};
++        auto ao2dc_cb_start = std::chrono::steady_clock::now();
+         function_dispatcher_->Execute(worker_thread_->thread_state(), client_callback, args,
+                                       rex::countof(args));
++        {
++          // AO2DC diagnostics: guest audio callback duration (budget: one 5.33 ms frame).
++          static uint64_t cb_count = 0, cb_total_us = 0, cb_max_us = 0, cb_over = 0, log_ms = 0;
++          auto now = std::chrono::steady_clock::now();
++          uint64_t us = uint64_t(
++              std::chrono::duration_cast<std::chrono::microseconds>(now - ao2dc_cb_start).count());
++          ++cb_count;
++          cb_total_us += us;
++          cb_max_us = std::max(cb_max_us, us);
++          if (us > 5333) {
++            ++cb_over;
++          }
++          uint64_t now_ms = uint64_t(
++              std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
++          if (now_ms - log_ms >= 5000) {
++            if (log_ms && REXCVAR_GET(ao2dc_audio_record)) {
++              REXAPU_INFO("Audio callback: {} calls, avg {:.2f} ms, max {:.2f} ms, {} over 5.33 ms",
++                          cb_count, cb_count ? cb_total_us / 1000.0 / cb_count : 0.0,
++                          cb_max_us / 1000.0, cb_over);
++            }
++            cb_count = cb_total_us = cb_max_us = cb_over = 0;
++            log_ms = now_ms;
++          }
++        }
+         if (diag_pump_count < 10) {
+           REXAPU_DEBUG("AudioWorker: callback returned for client {}", index);
+         }
+diff --git a/src/audio/sdl/sdl_audio_driver.cpp b/src/audio/sdl/sdl_audio_driver.cpp
+index 20a2cd8..176c48c 100644
+--- a/src/audio/sdl/sdl_audio_driver.cpp
++++ b/src/audio/sdl/sdl_audio_driver.cpp
+@@ -9,9 +9,16 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <chrono>
+ #include <algorithm>
+ #include <array>
+ #include <cstring>
++#include <cmath>
++#include <thread>
++#include <atomic>
++#include <cstdio>
++#include <filesystem>
++#include <vector>
+ 
+ #include <rex/assert.h>
+ #include <rex/audio/conversion.h>
+@@ -25,6 +32,188 @@
+ #include <SDL3/SDL.h>
+ 
+ REXCVAR_DEFINE_BOOL(audio_mute, false, "Audio", "Mute audio output");
++namespace rex::audio {
++void Ao2dcXmaReportRecent(float mix_peak);
++}  // namespace rex::audio
++
++REXCVAR_DEFINE_BOOL(audio_limiter, true, "Audio",
++                    "Smoothly turn the volume down when the game's mix would clip (AO2DC: loud "
++                    "gunshots, explosions and footsteps otherwise crackle)");
++REXCVAR_DEFINE_BOOL(ao2dc_audio_record, false, "Audio",
++                    "AO2DC diagnostics: keep the last 90 seconds of the game's 6-channel mix "
++                    "(before the stereo fold) and save it to logs/audio_record.wav every 10 seconds");
++
++namespace {
++// AO2DC diagnostics: rolling 6-channel 16-bit recording of the frames the game submits. The audio
++// callback only copies into the ring; a writer thread saves the newest 90 seconds periodically,
++// so the file always holds what was heard just before the game was closed.
++constexpr uint32_t kAo2dcRecordRate = 48000;
++constexpr uint32_t kAo2dcRecordFrames = kAo2dcRecordRate * 90;
++std::vector<int16_t> ao2dc_record_ring;
++// The stereo (or device-channel) signal actually handed to the device, after limiter and fold.
++std::vector<int16_t> ao2dc_output_ring;
++std::atomic<uint64_t> ao2dc_output_written{0};
++std::atomic<uint32_t> ao2dc_output_channels{2};
++std::atomic<uint64_t> ao2dc_record_written{0};  // total frames ever written
++std::thread ao2dc_record_thread;
++
++void Ao2dcWriteWav(const char* tmp_path, const char* path, const std::vector<int16_t>& ring,
++                   uint64_t total, uint32_t channels) {
++  uint32_t ring_frames = uint32_t(ring.size() / channels);
++  uint32_t frames = uint32_t(std::min<uint64_t>(total, ring_frames));
++  if (!frames) {
++    return;
++  }
++  FILE* f = std::fopen(tmp_path, "wb");
++  if (!f) {
++    return;
++  }
++  const uint32_t data_bytes = frames * channels * 2;
++  auto w32 = [f](uint32_t v) { std::fwrite(&v, 4, 1, f); };
++  auto w16 = [f](uint16_t v) { std::fwrite(&v, 2, 1, f); };
++  std::fwrite("RIFF", 1, 4, f);
++  w32(36 + data_bytes);
++  std::fwrite("WAVEfmt ", 1, 8, f);
++  w32(16);
++  w16(1);
++  w16(uint16_t(channels));
++  w32(kAo2dcRecordRate);
++  w32(kAo2dcRecordRate * channels * 2);
++  w16(uint16_t(channels * 2));
++  w16(16);
++  std::fwrite("data", 1, 4, f);
++  w32(data_bytes);
++  uint32_t start = uint32_t((total - frames) % ring_frames);
++  uint32_t first = std::min(frames, ring_frames - start);
++  std::fwrite(ring.data() + size_t(start) * channels, 2 * channels, first, f);
++  std::fwrite(ring.data(), 2 * channels, frames - first, f);
++  std::fclose(f);
++  std::error_code ec;
++  std::filesystem::rename(tmp_path, path, ec);
++}
++
++void Ao2dcRecordSave() {
++  if (!ao2dc_output_ring.empty()) {
++    Ao2dcWriteWav("logs/audio_output.tmp", "logs/audio_output.wav", ao2dc_output_ring,
++                  ao2dc_output_written.load(), ao2dc_output_channels.load());
++  }
++  uint64_t total = ao2dc_record_written.load();
++  uint32_t frames = uint32_t(std::min<uint64_t>(total, kAo2dcRecordFrames));
++  if (!frames) {
++    return;
++  }
++  std::filesystem::create_directories("logs");
++  FILE* f = std::fopen("logs/audio_record.tmp", "wb");
++  if (!f) {
++    return;
++  }
++  const uint32_t channels = 6, bits = 16;
++  const uint32_t data_bytes = frames * channels * (bits / 8);
++  auto w32 = [f](uint32_t v) { std::fwrite(&v, 4, 1, f); };
++  auto w16 = [f](uint16_t v) { std::fwrite(&v, 2, 1, f); };
++  std::fwrite("RIFF", 1, 4, f);
++  w32(36 + data_bytes);
++  std::fwrite("WAVEfmt ", 1, 8, f);
++  w32(16);
++  w16(1);  // PCM
++  w16(uint16_t(channels));
++  w32(kAo2dcRecordRate);
++  w32(kAo2dcRecordRate * channels * (bits / 8));
++  w16(uint16_t(channels * (bits / 8)));
++  w16(uint16_t(bits));
++  std::fwrite("data", 1, 4, f);
++  w32(data_bytes);
++  uint32_t start = uint32_t((total - frames) % kAo2dcRecordFrames);
++  uint32_t first = std::min(frames, kAo2dcRecordFrames - start);
++  std::fwrite(ao2dc_record_ring.data() + size_t(start) * 6, 12, first, f);
++  std::fwrite(ao2dc_record_ring.data(), 12, frames - first, f);
++  std::fclose(f);
++  std::error_code ec;
++  std::filesystem::rename("logs/audio_record.tmp", "logs/audio_record.wav", ec);
++}
++
++void Ao2dcRecord(const float* sequential_be, size_t channel_samples) {
++  if (!REXCVAR_GET(ao2dc_audio_record)) {
++    return;
++  }
++  if (ao2dc_record_ring.empty()) {
++    ao2dc_record_ring.resize(size_t(kAo2dcRecordFrames) * 6);
++    ao2dc_record_thread = std::thread([] {
++      for (;;) {
++        std::this_thread::sleep_for(std::chrono::seconds(10));
++        Ao2dcRecordSave();
++      }
++    });
++    ao2dc_record_thread.detach();
++  }
++  uint64_t total = ao2dc_record_written.load();
++  for (size_t i = 0; i < channel_samples; ++i) {
++    size_t slot = size_t((total + i) % kAo2dcRecordFrames) * 6;
++    for (size_t c = 0; c < 6; ++c) {
++      float v = rex::byte_swap(sequential_be[c * channel_samples + i]);
++      ao2dc_record_ring[slot + c] = int16_t(std::clamp(v, -1.0f, 1.0f) * 32767.0f);
++    }
++  }
++  ao2dc_record_written.store(total + channel_samples);
++}
++
++// Records the converted device signal (interleaved floats, device channel count).
++void Ao2dcRecordOutput(const float* interleaved, size_t frames, uint32_t channels) {
++  if (!REXCVAR_GET(ao2dc_audio_record) || ao2dc_record_ring.empty()) {
++    return;
++  }
++  if (ao2dc_output_ring.empty()) {
++    ao2dc_output_channels.store(channels);
++    ao2dc_output_ring.resize(size_t(kAo2dcRecordFrames) * channels);
++  }
++  const uint32_t ring_frames = uint32_t(ao2dc_output_ring.size() / channels);
++  uint64_t total = ao2dc_output_written.load();
++  for (size_t i = 0; i < frames; ++i) {
++    size_t slot = size_t((total + i) % ring_frames) * channels;
++    for (uint32_t c = 0; c < channels; ++c) {
++      ao2dc_output_ring[slot + c] =
++          int16_t(std::clamp(interleaved[i * channels + c], -1.0f, 1.0f) * 32767.0f);
++    }
++  }
++  ao2dc_output_written.store(total + frames);
++}
++
++// Peak of one guest frame (6 sequential big-endian channels) as it will reach the device.
++float Ao2dcFramePeak(const float* sequential_be, size_t channel_samples, int device_channels,
++                     const rex::audio::StereoFold& fold, float gain) {
++  auto at = [&](size_t c, size_t i) { return rex::byte_swap(sequential_be[c * channel_samples + i]); };
++  float peak = 0.0f;
++  for (size_t i = 0; i < channel_samples; ++i) {
++    if (device_channels == 2) {
++      const float mid = at(2, i) * fold.center + at(3, i) * fold.lfe;
++      peak = std::max(peak, std::fabs(at(0, i) + mid + at(4, i) * fold.surround));
++      peak = std::max(peak, std::fabs(at(1, i) + mid + at(5, i) * fold.surround));
++    } else {
++      for (size_t c = 0; c < 6; ++c) {
++        peak = std::max(peak, std::fabs(at(c, i)));
++      }
++    }
++  }
++  return peak * (device_channels == 2 ? fold.scale : 1.0f) * gain;
++}
++
++// Gain that keeps a frame of this peak just under full scale.
++float Ao2dcLimiterTarget(float peak) {
++  constexpr float kCeiling = 0.95f;
++  return peak > kCeiling ? kCeiling / peak : 1.0f;
++}
++
++// Scales a guest frame in place by a gain ramping linearly from start to end.
++void Ao2dcApplyGainRamp(float* sequential_be, size_t channel_samples, float start, float end) {
++  for (size_t c = 0; c < 6; ++c) {
++    float* ch = sequential_be + c * channel_samples;
++    for (size_t i = 0; i < channel_samples; ++i) {
++      const float g = start + (end - start) * float(i + 1) / float(channel_samples);
++      ch[i] = rex::byte_swap(rex::byte_swap(ch[i]) * g);
++    }
++  }
++}
++}  // namespace
+ 
+ namespace rex::audio::sdl {
+ 
+@@ -178,6 +367,14 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+   const StereoFold fold = GetStereoFold();
+   const SurroundMix mix = GetSurroundMix();
+   const float gain = GetOutputGain();
++  // Local change (AO2DC): an underrun used to cut straight to silence (and resume straight from
++  // it), which is heard as a sharp click. Ramp from the last output sample to zero instead, and
++  // fade the first frame after an underrun back in. Underruns are counted in the log.
++  const int out_channels = std::max<int>(driver->sdl_device_channels_, 1);
++  static float last_sample[8] = {};
++  static bool underrun_active = false;
++  static uint32_t underruns = 0;
++  static uint64_t underrun_log_ms = 0;
+   while (additional_amount > 0) {
+     static uint32_t sdl_callback_count = 0;
+     std::unique_lock<std::mutex> guard(driver->frames_mutex_);
+@@ -186,7 +383,29 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+         REXAPU_DEBUG("SDLCallback: no frames queued (silence)");
+         sdl_callback_count++;
+       }
+-      std::memset(data, 0, len);
++      if (!underrun_active) {
++        ++underruns;
++        for (int i = 0; i < int(channel_samples_); ++i) {
++          float ramp = 1.0f - float(i + 1) / float(channel_samples_);
++          for (int c = 0; c < out_channels && c < 8; ++c) {
++            data[i * out_channels + c] = last_sample[c] * ramp;
++          }
++        }
++        for (int c = 0; c < 8; ++c) {
++          last_sample[c] = 0.0f;
++        }
++        underrun_active = true;
++      } else {
++        std::memset(data, 0, len);
++      }
++      uint64_t now_ms = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
++                                     std::chrono::steady_clock::now().time_since_epoch())
++                                     .count());
++      if (now_ms - underrun_log_ms >= 5000) {
++        REXAPU_INFO("Audio underruns in the last interval: {}", underruns);
++        underruns = 0;
++        underrun_log_ms = now_ms;
++      }
+       if (!SDL_PutAudioStreamData(stream, data, len)) {
+         REXAPU_ERROR("SDL_PutAudioStreamData() failed while filling silence: {}", SDL_GetError());
+         break;
+@@ -195,6 +414,61 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+     } else {
+       auto buffer = driver->frames_queued_.front();
+       driver->frames_queued_.pop();
++      Ao2dcRecord(buffer, channel_samples_);
++      if (REXCVAR_GET(ao2dc_audio_record)) {
++        // AO2DC diagnostics: when the game's own mix hits full scale, report recent XMA output.
++        float mix_peak = 0.0f;
++        for (size_t i = 0; i < size_t(channel_samples_) * 6; ++i) {
++          mix_peak = std::max(mix_peak, std::fabs(rex::byte_swap(buffer[i])));
++        }
++        static uint64_t last_report_ms = 0;
++        uint64_t now_ms = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
++                                       std::chrono::steady_clock::now().time_since_epoch())
++                                       .count());
++        if (mix_peak >= 0.99f && now_ms - last_report_ms > 250) {
++          last_report_ms = now_ms;
++          rex::audio::Ao2dcXmaReportRecent(mix_peak);
++        }
++      }
++      if (REXCVAR_GET(audio_limiter) && !REXCVAR_GET(audio_mute)) {
++        // AO2DC: look-ahead limiter. The game's mix exceeds full scale on loud moments and the
++        // conversion below hard-clips it, heard as sharp cracks. Keep the gain at or below what
++        // this frame and the next queued frame need, ramp within the frame, and release slowly.
++        static float limiter_gain = 1.0f;
++        static uint32_t limited_frames = 0;
++        static float limiter_min = 1.0f;
++        static uint64_t limiter_log_ms = 0;
++        const int device_channels = driver->sdl_device_channels_;
++        const float now_target = Ao2dcLimiterTarget(
++            Ao2dcFramePeak(buffer, channel_samples_, device_channels, fold, gain));
++        float next_target = 1.0f;
++        if (!driver->frames_queued_.empty()) {
++          next_target = Ao2dcLimiterTarget(Ao2dcFramePeak(
++              driver->frames_queued_.front(), channel_samples_, device_channels, fold, gain));
++        }
++        constexpr float kRelease = 0.05f;  // per 5.3 ms frame: ~100 ms back to unity
++        const float start = std::min(limiter_gain, now_target);
++        float end = limiter_gain + (1.0f - limiter_gain) * kRelease;
++        end = std::min({end, now_target, next_target});
++        if (start < 0.9999f || end < 0.9999f) {
++          Ao2dcApplyGainRamp(buffer, channel_samples_, start, end);
++          ++limited_frames;
++          limiter_min = std::min({limiter_min, start, end});
++        }
++        limiter_gain = end;
++        uint64_t now_ms = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
++                                       std::chrono::steady_clock::now().time_since_epoch())
++                                       .count());
++        if (now_ms - limiter_log_ms >= 5000) {
++          if (limited_frames) {
++            REXAPU_INFO("Audio limiter: {} frames turned down, lowest gain {:.2f}", limited_frames,
++                        limiter_min);
++          }
++          limited_frames = 0;
++          limiter_min = 1.0f;
++          limiter_log_ms = now_ms;
++        }
++      }
+       if (REXCVAR_GET(audio_mute)) {
+         std::memset(data, 0, len);
+       } else {
+@@ -212,6 +486,39 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+             break;
+         }
+       }
++      Ao2dcRecordOutput(data, channel_samples_, uint32_t(out_channels));
++      {
++        // AO2DC diagnostics: output samples that reach full scale (hard-clipped), per 5 s.
++        static uint32_t clipped = 0;
++        static uint64_t clip_log_ms = 0;
++        for (int i = 0; i < sample_count; ++i) {
++          if (std::fabs(data[i]) >= 0.999f) {
++            ++clipped;
++          }
++        }
++        uint64_t now_ms = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
++                                       std::chrono::steady_clock::now().time_since_epoch())
++                                       .count());
++        if (now_ms - clip_log_ms >= 5000) {
++          if (clipped) {
++            REXAPU_INFO("Audio output: {} samples clipped in the last interval", clipped);
++          }
++          clipped = 0;
++          clip_log_ms = now_ms;
++        }
++      }
++      if (underrun_active) {
++        for (int i = 0; i < int(channel_samples_); ++i) {
++          float ramp = float(i + 1) / float(channel_samples_);
++          for (int c = 0; c < out_channels; ++c) {
++            data[i * out_channels + c] *= ramp;
++          }
++        }
++        underrun_active = false;
++      }
++      for (int c = 0; c < out_channels && c < 8; ++c) {
++        last_sample[c] = data[(int(channel_samples_) - 1) * out_channels + c];
++      }
+       if (!SDL_PutAudioStreamData(stream, data, len)) {
+         REXAPU_ERROR("SDL_PutAudioStreamData() failed: {}", SDL_GetError());
+         driver->frames_unused_.push(buffer);
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+index 11b83be..a3d1175 100644
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -10,9 +10,20 @@
+ */
+ 
+ #include <algorithm>
++#include <cstdio>
++#include <filesystem>
++#include <vector>
++#include <string>
++#include <mutex>
++#include <map>
++#include <array>
++#include <cmath>
++#include <chrono>
++#include <atomic>
+ #include <cstring>
+ 
+ #include <rex/audio/xma/context.h>
++#include <rex/cvar.h>
+ #include <rex/audio/xma/decoder.h>
+ #include <rex/audio/xma/helpers.h>
+ #include <rex/dbg.h>
+@@ -36,6 +47,237 @@ extern "C" {
+ // Credits for most of this code goes to:
+ // https://github.com/koolkdev/libertyv/blob/master/libav_wrapper/xma2dec.c
+ 
++REXCVAR_DECLARE(bool, ao2dc_audio_record);
++
++namespace {
++// AO2DC diagnostics: decoded XMA frames whose float output reaches near full scale (>= 0.9).
++// The game's mix had one-shot sounds (footsteps) blasting at full scale; this tells whether the
++// decoder already outputs them that loud. Summary every 5 seconds, details for the first 40.
++std::atomic<uint32_t> ao2dc_xma_frames{0};
++std::atomic<uint32_t> ao2dc_xma_loud_frames{0};
++std::atomic<uint32_t> ao2dc_xma_loud_logged{0};
++std::atomic<uint32_t> ao2dc_xma_peak_milli{0};
++std::atomic<uint64_t> ao2dc_xma_peak_log_ms{0};
++
++struct Ao2dcXmaEvent {
++  uint64_t time_ms;
++  uint32_t context;
++  float peak;
++  float rms;
++  uint32_t read_offset;
++};
++struct Ao2dcXmaStream {
++  bool reset_since_last = true;
++  uint32_t buffer_ptr = 0, packets = 0, rate = 0, stereo = 0, loop_count = 0, loop_start = 0,
++           loop_end = 0, frames = 0, prev_ptr = 0;
++  bool logged = false;
++};
++std::array<Ao2dcXmaStream, 512> ao2dc_xma_streams;
++std::mutex ao2dc_xma_events_lock;
++std::map<uint32_t, uint32_t> ao2dc_xma_starts;  // input buffer -> buffers started, per interval
++// Last half second of each context's decoded output (interleaved), for dumping suspicious sounds.
++struct Ao2dcXmaHistory {
++  std::vector<float> samples;  // interleaved, ring
++  size_t write = 0;
++  uint32_t channels = 1, rate = 48000;
++};
++std::array<Ao2dcXmaHistory, 512> ao2dc_xma_history;
++uint32_t ao2dc_xma_dumps = 0;
++std::array<Ao2dcXmaEvent, 4096> ao2dc_xma_events;
++size_t ao2dc_xma_events_next = 0;
++
++uint64_t Ao2dcNowMs() {
++  return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
++                      std::chrono::steady_clock::now().time_since_epoch())
++                      .count());
++}
++
++struct Ao2dcFramePath {
++  uint32_t packet_index, packet_count, relative_offset, frame_size, frame_count, current_frame,
++      skip_count;
++};
++
++void Ao2dcXmaPeakCheck(uint32_t id, const rex::audio::XMA_CONTEXT_DATA* data,
++                       const float* const* channels, int samples, const Ao2dcFramePath& path) {
++  // Diagnostics only: off unless the audio recorder is on (ao2dc_audio_record).
++  if (!REXCVAR_GET(ao2dc_audio_record)) {
++    return;
++  }
++  float peak = 0.0f;
++  double sum = 0.0;
++  int n = 0;
++  for (int c = 0; c < (data->is_stereo ? 2 : 1); ++c) {
++    for (int i = 0; i < samples; ++i) {
++      peak = std::max(peak, std::fabs(channels[c][i]));
++      sum += double(channels[c][i]) * channels[c][i];
++      ++n;
++    }
++  }
++  float rms = float(std::sqrt(sum / std::max(n, 1)));
++  if (id < ao2dc_xma_streams.size()) {
++    Ao2dcXmaStream& st = ao2dc_xma_streams[id];
++    const uint32_t ptr = data->current_buffer ? data->input_buffer_1_ptr : data->input_buffer_0_ptr;
++    if (data->input_buffer_read_offset == 32) {
++      st.prev_ptr = st.buffer_ptr;
++      st.buffer_ptr = ptr;
++      st.packets = data->current_buffer ? data->input_buffer_1_packet_count
++                                        : data->input_buffer_0_packet_count;
++      st.rate = data->sample_rate;
++      st.stereo = data->is_stereo;
++      st.loop_count = data->loop_count;
++      st.loop_start = data->loop_start;
++      st.loop_end = data->loop_end;
++      st.frames = 0;
++      st.logged = false;
++      std::lock_guard<std::mutex> lock(ao2dc_xma_events_lock);
++      ++ao2dc_xma_starts[ptr];
++    }
++    ++st.frames;
++    if (data->input_buffer_read_offset == 32 && st.frames == 1) {
++      st.reset_since_last = false;
++    }
++  }
++  if (id < ao2dc_xma_history.size()) {
++    std::lock_guard<std::mutex> lock(ao2dc_xma_events_lock);
++    Ao2dcXmaHistory& h = ao2dc_xma_history[id];
++    const uint32_t ch = data->is_stereo ? 2 : 1;
++    if (h.samples.empty()) {
++      h.samples.assign(48000, 0.0f);
++    }
++    h.channels = ch;
++    h.rate = rex::audio::kIdToSampleRate[std::min<uint32_t>(data->sample_rate, 3)];
++    for (int i = 0; i < samples; ++i) {
++      for (uint32_t c = 0; c < ch; ++c) {
++        h.samples[h.write] = channels[c][i];
++        h.write = (h.write + 1) % h.samples.size();
++      }
++    }
++  }
++  {
++    std::lock_guard<std::mutex> lock(ao2dc_xma_events_lock);
++    ao2dc_xma_events[ao2dc_xma_events_next++ % ao2dc_xma_events.size()] = {
++        Ao2dcNowMs(), id, peak, float(std::sqrt(sum / std::max(n, 1))),
++        uint32_t(data->input_buffer_read_offset)};
++  }
++  ++ao2dc_xma_frames;
++  uint32_t milli = uint32_t(std::min(peak, 1000.0f) * 1000.0f);
++  uint32_t prev = ao2dc_xma_peak_milli.load();
++  while (milli > prev && !ao2dc_xma_peak_milli.compare_exchange_weak(prev, milli)) {
++  }
++  if (peak >= 0.9f) {
++    ++ao2dc_xma_loud_frames;
++  }
++  uint64_t now_ms = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
++                                 std::chrono::steady_clock::now().time_since_epoch())
++                                 .count());
++  uint64_t last = ao2dc_xma_peak_log_ms.load();
++  if (now_ms - last >= 5000 && ao2dc_xma_peak_log_ms.compare_exchange_strong(last, now_ms) &&
++      last) {
++    REXAPU_INFO("XMA output: {} frames, {} at >= 0.9 of full scale, max peak {:.3f}",
++                ao2dc_xma_frames.exchange(0), ao2dc_xma_loud_frames.exchange(0),
++                ao2dc_xma_peak_milli.exchange(0) / 1000.0);
++    std::vector<std::pair<uint32_t, uint32_t>> starts;
++    {
++      std::lock_guard<std::mutex> lock(ao2dc_xma_events_lock);
++      for (const auto& [buffer, count] : ao2dc_xma_starts) {
++        starts.emplace_back(count, buffer);
++      }
++      ao2dc_xma_starts.clear();
++    }
++    std::sort(starts.rbegin(), starts.rend());
++    uint32_t total = 0;
++    for (const auto& [count, buffer] : starts) {
++      total += count;
++    }
++    std::string top;
++    for (size_t i = 0; i < starts.size() && i < 6; ++i) {
++      top += fmt::format(" 0x{:08X}x{}", starts[i].second, starts[i].first);
++    }
++    REXAPU_INFO("XMA starts: {} buffers started ({} distinct); most:{}", total, starts.size(), top);
++  }
++}
++}  // namespace
++
++namespace rex::audio {
++// AO2DC diagnostics: called by the audio driver when the game's mix reaches full scale. Lists
++// the XMA contexts that decoded in the preceding 300 ms with their loudest frame.
++void Ao2dcXmaReportRecent(float mix_peak) {
++  struct Agg {
++    uint32_t frames = 0;
++    float peak = 0, rms = 0;
++    uint64_t first_ms = 0;
++    uint32_t first_offset = 0;
++  };
++  std::map<uint32_t, Agg> by_context;
++  uint64_t now = Ao2dcNowMs();
++  {
++    std::lock_guard<std::mutex> lock(ao2dc_xma_events_lock);
++    for (const auto& e : ao2dc_xma_events) {
++      if (!e.time_ms || now - e.time_ms > 300) {
++        continue;
++      }
++      Agg& a = by_context[e.context];
++      if (!a.frames || e.time_ms < a.first_ms) {
++        a.first_ms = e.time_ms;
++        a.first_offset = e.read_offset;
++      }
++      ++a.frames;
++      a.peak = std::max(a.peak, e.peak);
++      a.rms = std::max(a.rms, e.rms);
++    }
++  }
++  // Dump the loudest recently started contexts' decoded audio (first 16 files).
++  for (const auto& [ctx, a] : by_context) {
++    if (a.rms < 0.4f || ao2dc_xma_dumps >= 16 || ctx >= ao2dc_xma_history.size()) {
++      continue;
++    }
++    std::vector<float> pcm;
++    uint32_t channels, rate;
++    {
++      std::lock_guard<std::mutex> lock(ao2dc_xma_events_lock);
++      const Ao2dcXmaHistory& h = ao2dc_xma_history[ctx];
++      if (h.samples.empty()) {
++        continue;
++      }
++      pcm.insert(pcm.end(), h.samples.begin() + h.write, h.samples.end());
++      pcm.insert(pcm.end(), h.samples.begin(), h.samples.begin() + h.write);
++      channels = h.channels;
++      rate = h.rate;
++    }
++    const uint32_t frames = uint32_t(pcm.size() / channels);
++    std::filesystem::create_directories("logs");
++    const std::string path = fmt::format("logs/xma_dump_{:02d}_ctx{}.wav", ao2dc_xma_dumps++, ctx);
++    if (FILE* f = std::fopen(path.c_str(), "wb")) {
++      const uint32_t data_bytes = frames * channels * 4;
++      auto w32 = [f](uint32_t v) { std::fwrite(&v, 4, 1, f); };
++      auto w16 = [f](uint16_t v) { std::fwrite(&v, 2, 1, f); };
++      std::fwrite("RIFF", 1, 4, f);
++      w32(36 + data_bytes);
++      std::fwrite("WAVEfmt ", 1, 8, f);
++      w32(16);
++      w16(3);
++      w16(uint16_t(channels));
++      w32(rate);
++      w32(rate * channels * 4);
++      w16(uint16_t(channels * 4));
++      w16(32);
++      std::fwrite("data", 1, 4, f);
++      w32(data_bytes);
++      std::fwrite(pcm.data(), 4, size_t(frames) * channels, f);
++      std::fclose(f);
++      REXAPU_INFO("XMA dump: {} (ctx {}, {} Hz, {} ch, rms {:.2f})", path, ctx, rate, channels,
++                  a.rms);
++    }
++  }
++  std::string list;
++  for (const auto& [ctx, a] : by_context) {
++    list += fmt::format(" [ctx {} frames {} peak {:.2f} rms {:.2f} since -{}ms off {}]", ctx,
++                        a.frames, a.peak, a.rms, now - a.first_ms, a.first_offset);
++  }
++  REXAPU_INFO("Mix at full scale (peak {:.2f}); XMA in last 300 ms:{}", mix_peak, list);
++}
++}  // namespace rex::audio
++
+ namespace rex::audio {
+ 
+ using stream::BitStream;
+@@ -190,6 +432,9 @@ void XmaContext::ClearLocked(XMA_CONTEXT_DATA* data) {
+ }
+ 
+ void XmaContext::ResetDecoderState() {
++  if (id() < ao2dc_xma_streams.size()) {
++    ao2dc_xma_streams[id()].reset_since_last = true;
++  }
+   // A freed or re-initialized context is a new logical stream, so the previous
+   // wave's MDCT overlap-add tail must not survive into frame 0 of the next one.
+   // avcodec_flush_buffers() cannot drop it: ff_xmaframes_decoder declares no
+@@ -670,6 +915,12 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+   if (decoded) {
+     ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data), bool(data->is_stereo),
+                  decoded_frame_.data());
++    Ao2dcXmaPeakCheck(id(), data, reinterpret_cast<const float* const*>(av_frame_->data),
++                      av_frame_->nb_samples,
++                      Ao2dcFramePath{uint32_t(packet_index), current_input_packet_count,
++                                     relative_offset, packet_info.current_frame_size_,
++                                     packet_info.frame_count_, packet_info.current_frame_,
++                                     skip_count});
+ 
+     // Realign the decoder's output onto the bitstream's sample numbering: the
+     // samples of the frame just decoded run from kDecoderStartPadding into this
+diff --git a/src/audio/xma_decoder.cpp b/src/audio/xma_decoder.cpp
+index a0a178d..d5bb546 100644
+--- a/src/audio/xma_decoder.cpp
++++ b/src/audio/xma_decoder.cpp
+@@ -9,6 +9,9 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <atomic>
++#include <chrono>
++
+ #include <rex/audio/xma/context.h>
+ #include <rex/audio/xma/decoder.h>
+ #include <rex/cvar.h>
+@@ -28,6 +31,38 @@ extern "C" {
+ 
+ REXCVAR_DEFINE_BOOL(ffmpeg_verbose, false, "Audio", "Verbose FFmpeg output (debug and above)");
+ 
++REXCVAR_DECLARE(bool, ao2dc_audio_record);
++
++namespace {
++// AO2DC diagnostics: XMA activity per 5-second interval (logged from the kick path).
++std::atomic<uint32_t> ao2dc_xma_allocs{0};
++std::atomic<uint32_t> ao2dc_xma_kicks{0};
++std::atomic<uint32_t> ao2dc_xma_work{0};
++std::atomic<uint64_t> ao2dc_xma_log_ms{0};
++std::atomic<uint64_t> ao2dc_xma_inline_us{0};
++std::atomic<uint64_t> ao2dc_xma_inline_max_us{0};
++
++void Ao2dcXmaMaybeLog() {
++  if (!REXCVAR_GET(ao2dc_audio_record)) {
++    return;
++  }
++  uint64_t now_ms = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
++                                 std::chrono::steady_clock::now().time_since_epoch())
++                                 .count());
++  uint64_t last = ao2dc_xma_log_ms.load();
++  if (now_ms - last < 5000 || !ao2dc_xma_log_ms.compare_exchange_strong(last, now_ms)) {
++    return;
++  }
++  if (last) {
++    REXAPU_INFO("XMA: {} contexts allocated, {} kicks, {} decode passes in the last interval; "
++                "inline decode {:.1f} ms total, max {:.2f} ms per kick",
++                ao2dc_xma_allocs.exchange(0), ao2dc_xma_kicks.exchange(0),
++                ao2dc_xma_work.exchange(0), ao2dc_xma_inline_us.exchange(0) / 1000.0,
++                ao2dc_xma_inline_max_us.exchange(0) / 1000.0);
++  }
++}
++}  // namespace
++
+ // As with normal Microsoft, there are like twelve different ways to access
+ // the audio APIs. Early games use XMA*() methods almost exclusively to touch
+ // decoders. Later games use XAudio*() and direct memory writes to the XMA
+@@ -146,6 +181,7 @@ void XmaDecoder::WorkerThreadMain() {
+       bool worked = context.Work();
+       if (worked) {
+         context.SignalWorkDone();
++        ++ao2dc_xma_work;
+         PROFILE_XMA_FRAME_DECODED();
+       }
+       did_work = did_work || worked;
+@@ -213,6 +249,7 @@ uint32_t XmaDecoder::AllocateContext() {
+   XmaContext& context = contexts_[index];
+   assert_false(context.is_allocated());
+   context.set_is_allocated(true);
++  ++ao2dc_xma_allocs;
+   return context.guest_ptr();
+ }
+ 
+@@ -291,19 +328,35 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
+         uint32_t context_id = base_context_id + i;
+         auto& context = contexts_[context_id];
+         context.Enable();
++        ++ao2dc_xma_kicks;
+       }
+     }
+     // Decode inline. waiting on the worker sweep stalls the realtime
+     // audio thread 50-100ms during kick bursts.
++    auto ao2dc_inline_start = std::chrono::steady_clock::now();
++    struct Ao2dcInlineTimer {
++      std::chrono::steady_clock::time_point start;
++      ~Ao2dcInlineTimer() {
++        uint64_t us = uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
++                                   std::chrono::steady_clock::now() - start)
++                                   .count());
++        ao2dc_xma_inline_us += us;
++        uint64_t prev = ao2dc_xma_inline_max_us.load();
++        while (us > prev && !ao2dc_xma_inline_max_us.compare_exchange_weak(prev, us)) {
++        }
++      }
++    } ao2dc_inline_timer{ao2dc_inline_start};
+     for (int i = 0; kicked_value && i < 32; ++i, kicked_value >>= 1) {
+       if (kicked_value & 1) {
+         uint32_t context_id = base_context_id + i;
+         auto& context = contexts_[context_id];
+         if (context.Work()) {
+           context.SignalWorkDone();
++          ++ao2dc_xma_work;
+         }
+       }
+     }
++    Ao2dcXmaMaybeLog();
+     work_event_->Set();
+   } else if (r >= XmaRegister::Context0Lock && r <= XmaRegister::Context9Lock) {
+     // Context lock command.

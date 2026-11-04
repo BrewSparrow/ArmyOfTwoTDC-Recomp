@@ -1,0 +1,87 @@
+diff --git a/src/kernel/xam/xam_ui.cpp b/src/kernel/xam/xam_ui.cpp
+index 5a572ce..d3d1a23 100644
+--- a/src/kernel/xam/xam_ui.cpp
++++ b/src/kernel/xam/xam_ui.cpp
+@@ -507,13 +507,18 @@ u32 XamShowDeviceSelectorUI_entry(u32 user_index, u32 content_type, u32 content_
+                 uint32_t(user_index), uint32_t(content_type), uint32_t(content_flags),
+                 uint64_t(total_requested), device_id_ptr.guest_address(),
+                 overlapped.guest_address());
+-  return xeXamDispatchHeadless(
+-      [device_id_ptr]() -> X_RESULT {
+-        // NOTE: 0x00000001 is our dummy device ID from xam_content.cc
+-        *device_id_ptr = 0x00000001;
+-        return X_ERROR_SUCCESS;
+-      },
+-      overlapped.guest_address());
++  // Local change (AO2DC): pick the hard drive at once, as the console does when it is the only
++  // storage device. The deferred headless dispatch (system UI open, two 100 ms sleeps) lets
++  // Army of Two: The Devil's Cartel's job system run tasks from a freed pool.
++  // NOTE: 0x00000001 is our dummy device ID from xam_content.cc
++  if (device_id_ptr) {
++    *device_id_ptr = 0x00000001;
++  }
++  if (overlapped) {
++    REX_KERNEL_STATE()->CompleteOverlappedImmediate(overlapped.guest_address(), X_ERROR_SUCCESS);
++    return X_ERROR_IO_PENDING;
++  }
++  return X_ERROR_SUCCESS;
+ }
+ 
+ void XamShowDirtyDiscErrorUI_entry(u32 user_index) {
+diff --git a/src/system/xobject.cpp b/src/system/xobject.cpp
+index d358f39..445f504 100644
+--- a/src/system/xobject.cpp
++++ b/src/system/xobject.cpp
+@@ -29,6 +29,23 @@
+ 
+ namespace rex::system {
+ 
++namespace {
++// Local change (AO2DC): whether a stashed object can stand for a dispatch header of this type.
++bool IsNativeTypeMatch(XObject::Type type, int32_t as_type) {
++  switch (as_type) {
++    case 0:
++    case 1:
++      return type == XObject::Type::Event;
++    case 2:
++      return type == XObject::Type::Mutant;
++    case 5:
++      return type == XObject::Type::Semaphore;
++    default:
++      return true;
++  }
++}
++}  // namespace
++
+ XObject::XObject(Type type) : kernel_state_(nullptr), pointer_ref_count_(1), type_(type) {
+   handles_.reserve(10);
+ }
+@@ -388,15 +405,23 @@ object_ref<XObject> XObject::GetNativeObject(KernelState* kernel_state, void* na
+     as_type = header->type;
+   }
+ 
++  uint32_t guest_address = kernel_state->memory()->HostToGuestVirtual(native_ptr);
+   if (header->wait_list_flink == kXObjSignature) {
+     // Already initialized.
+-    // TODO: assert if the type of the object != as_type
+     uint32_t handle = header->wait_list_blink;
+     auto object = kernel_state->object_table()->LookupObject<XObject>(handle);
+-
+-    // TODO(benvanik): assert nothing has been changed in the struct.
+-    return object;
+-  } else {
++    // Local change (AO2DC): the guest can free a dispatch object's memory and reuse it for a new
++    // one without telling the kernel, leaving the old signature and a handle that is now dead or
++    // belongs to another object (Army of Two: The Devil's Cartel, KeSetEvent on a reused event
++    // reached a non-event object and crashed). Only trust the stash if the handle still refers
++    // to a live object of the right type (and, if it has a guest object, to this header);
++    // otherwise start over.
++    if (object && IsNativeTypeMatch(object->type(), as_type) &&
++        (!object->guest_object() || object->guest_object() == guest_address)) {
++      return object;
++    }
++  }
++  {
+     // First use, create new.
+     // https://www.nirsoft.net/kernel_struct/vista/KOBJECTS.html
+     XObject* object = nullptr;

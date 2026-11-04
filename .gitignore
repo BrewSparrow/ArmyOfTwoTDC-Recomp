@@ -1,0 +1,22 @@
+# Game data: the user's own disc dump goes here (see README). Only assets/README.md is tracked.
+/assets/*
+!/assets/README.md
+
+# Recompiled game code: generated from assets/ at build time by `rexglue codegen`.
+# rexglue.cmake is project boilerplate written by `rexglue init` and contains no game code.
+/generated/*
+!/generated/rexglue.cmake
+
+# Build output and per-user runtime data.
+/out/
+/build/
+/cache/
+/user/
+/logs/
+/settings/*.local.toml
+*.log
+
+# Editors and tools.
+/.vs/
+/.vscode/
+*.rdc

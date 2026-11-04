@@ -1,0 +1,42 @@
+diff --git a/src/codegen/phase_discover.cpp b/src/codegen/phase_discover.cpp
+index 1c73548..2c6b7a2 100644
+--- a/src/codegen/phase_discover.cpp
++++ b/src/codegen/phase_discover.cpp
+@@ -81,6 +81,12 @@ void discoverFunction(CodegenContext& ctx, uint32_t funcAddr,
+     }
+   }
+ 
++  // Local fix (AO2DC): misaligned addresses (from corrupt exception data) are not code.
++  if (funcAddr & 3) {
++    REXCODEGEN_WARN("Analyze: skipping misaligned function 0x{:08X}", funcAddr);
++    return;
++  }
++
+   // Find the code region containing this function
+   const CodeRegion* region = nullptr;
+   for (const auto& r : ctx.scan.codeRegions) {
+diff --git a/src/codegen/phase_register.cpp b/src/codegen/phase_register.cpp
+index 7d1fa44..8a7f6f1 100644
+--- a/src/codegen/phase_register.cpp
++++ b/src/codegen/phase_register.cpp
+@@ -604,6 +604,11 @@ VoidResult registerEntryPoints(CodegenContext& ctx) {
+     if (graph.getFunction(beginAddr) != nullptr) {
+       continue;
+     }
++    // Local fix (AO2DC): PPC code is 4-byte aligned; skip corrupt PDATA entries.
++    if (beginAddr & 3) {
++      REXCODEGEN_WARN("Analyze: skipping misaligned PDATA entry 0x{:08X}", beginAddr);
++      continue;
++    }
+ 
+     std::optional<ParsedExceptionInfo> exInfo;
+     PrologInfo prologInfo;
+@@ -619,6 +624,8 @@ VoidResult registerEntryPoints(CodegenContext& ctx) {
+         state.invalidInstructions[beginAddr - 8] = 8;
+ 
+         for (uint32_t addr : exInfo->discoveredFuncs) {
++          if (addr & 3)  // Local fix (AO2DC): not code
++            continue;
+           ehDiscoveredFuncs.push_back(addr);
+         }
+ 

@@ -1,2 +1,2 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# SDK patches apply to LF sources in the submodule; keep them LF on every checkout.
+*.patch text eol=lf

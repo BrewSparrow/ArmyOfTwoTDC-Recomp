@@ -1,0 +1,88 @@
+diff --git a/src/rexglue/main.cpp b/src/rexglue/main.cpp
+index 201b623..326ca9b 100644
+--- a/src/rexglue/main.cpp
++++ b/src/rexglue/main.cpp
+@@ -13,6 +13,13 @@
+ #include "ui/ui.h"
+ 
+ #include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <exception>
++#include <csignal>
++#include <stdlib.h>
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
+ #include <map>
+ #include <string>
+ 
+@@ -57,6 +64,28 @@ void ConfigureLogging(const std::string& level, const std::string& log_file, boo
+ }  // namespace
+ 
+ int main(int argc, char** argv) {
++  // Local addition (AO2DC): report why the process aborts instead of dying silently.
++  _set_invalid_parameter_handler([](const wchar_t* expr, const wchar_t* func, const wchar_t* file, unsigned line, uintptr_t) {
++    std::fprintf(stderr, "rexglue: invalid parameter in %ls (%ls:%u): %ls\n", func ? func : L"?",
++                 file ? file : L"?", line, expr ? expr : L"?");
++    std::fflush(stderr);
++  });
++  std::signal(SIGABRT, [](int) {
++    std::fprintf(stderr, "rexglue: abort() called (assertion or invalid parameter)\n");
++    void* frames[48];
++    unsigned short count = CaptureStackBackTrace(0, 48, frames, nullptr);
++    for (unsigned short i = 0; i < count; ++i) {
++      HMODULE module = nullptr;
++      char name[260] = "?";
++      if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                             static_cast<LPCSTR>(frames[i]), &module))
++        GetModuleFileNameA(module, name, sizeof(name));
++      std::fprintf(stderr, "  #%u %s+0x%llx\n", i, name,
++                   static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i]) - reinterpret_cast<uintptr_t>(module)));
++    }
++    std::fflush(stderr);
++    std::_Exit(4);
++  });
+   CLI::App app{TitleString(), "rexglue"};
+   app.set_version_flag("--version", REXGLUE_VERSION_STRING);
+   app.require_subcommand(1);
+diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
+index bd43109..493d28e 100644
+--- a/src/system/function_dispatcher.cpp
++++ b/src/system/function_dispatcher.cpp
+@@ -14,6 +14,9 @@
+  */
+ 
+ #include <rex/assert.h>
++#include <rex/memory.h>
++#include <fmt/format.h>
++#include <string>
+ #include <rex/dbg.h>
+ #include <rex/logging.h>
+ #include <rex/perf/counter.h>
+@@ -34,9 +37,23 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
+ 
+ }  // namespace
+ 
+-static void InvalidFunctionTrap(PPCContext& ctx, uint8_t* /*base*/) {
+-  REX_FATAL("Call to invalid or unregistered function at guest address 0x{:08X}",
+-            ctx.last_indirect_target);
++static void InvalidFunctionTrap(PPCContext& ctx, uint8_t* base) {
++  // Local addition (AO2DC): the 64 bytes around r31 (often the object the call came through).
++  if (base && ctx.r31.u32 >= 0x10000) {
++    std::string words;
++    for (int i = -4; i < 12; ++i) {
++      uint32_t addr = ctx.r31.u32 + i * 4;
++      uint32_t host = addr + (addr >= 0xE0000000u ? 0x1000u : 0u);
++      uint32_t v = *reinterpret_cast<uint32_t*>(base + host);
++      words += fmt::format(" {:08X}", __builtin_bswap32(v));
++    }
++    REXLOG_ERROR("Invalid call: memory at r31-16:{}", words);
++  }
++  // Local addition (AO2DC): the caller's return address and argument registers, to find the
++  // call site.
++  REX_FATAL("Call to invalid or unregistered function at guest address 0x{:08X} (lr 0x{:08X}, "
++            "r3 0x{:08X} r4 0x{:08X} r1 0x{:08X} r31 0x{:08X})",
++            ctx.last_indirect_target, uint32_t(ctx.lr), ctx.r3.u32, ctx.r4.u32, ctx.r1.u32, ctx.r31.u32);
+ }
+ 
+ PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {
