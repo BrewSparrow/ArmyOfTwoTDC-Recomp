@@ -1,3 +1,54 @@
+diff --git a/src/kernel/xam/xam_content.cpp b/src/kernel/xam/xam_content.cpp
+index 1fb1e16..0e38f1e 100644
+--- a/src/kernel/xam/xam_content.cpp
++++ b/src/kernel/xam/xam_content.cpp
+@@ -62,6 +62,10 @@ u32 XamContentCreateEnumerator_entry(u32 user_index, u32 device_id, u32 content_
+                                      u32 content_flags, u32 items_per_enumerate,
+                                      mapped_u32 buffer_size_ptr, mapped_u32 handle_out) {
+   assert_not_null(handle_out);
++  REXKRNL_INFO(
++      "AO2DC save trace: XamContentCreateEnumerator user={} device={:#x} type={:#x} flags={:#x} title={:08X} xuid={:016X}",
++      user_index, device_id, content_type, content_flags, REX_KERNEL_STATE()->title_id(),
++      REX_KERNEL_STATE()->user_profile()->xuid());
+ 
+   auto device_info = device_id == 0 ? nullptr : GetDummyDeviceInfo(device_id);
+   if ((device_id && device_info == nullptr) || !handle_out) {
+@@ -107,7 +111,9 @@ u32 XamContentCreateEnumerator_entry(u32 user_index, u32 device_id, u32 content_
+     // TODO(gibbed): disc drive content
+   }
+ 
+-  REXKRNL_DEBUG("XamContentCreateEnumerator: added {} items to enumerator", e->item_count());
++  REXKRNL_DEBUG(
++      "AO2DC save trace: XamContentCreateEnumerator added {} items type={:#x}",
++      e->item_count(), content_type);
+ 
+   *handle_out = e->handle();
+   return X_ERROR_SUCCESS;
+@@ -135,6 +141,13 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
+     xuid = 0;
+   }
+ 
++  REXKRNL_INFO(
++      "AO2DC save trace: XamContentCreate user={} root={} type={:#x} title={:08X} xuid={:016X} "
++      "file={} flags={:#x} cache_size={} content_size={}",
++      user_index, root_name.value(), uint32_t(content_data.content_type.get()),
++      content_data.title_id.get(), xuid, content_data.file_name(), flags, cache_size,
++      content_size);
++
+   auto content_manager = REX_KERNEL_STATE()->content_manager();
+ 
+   if (overlapped_ptr && disposition_ptr) {
+@@ -216,6 +229,10 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
+       result = content_manager->OpenContent(root_name, xuid, content_data, content_license);
+     }
+ 
++    REXKRNL_INFO(
++        "AO2DC save trace: XamContentCreate completed root={} file={} disposition={} result={:#x}",
++        root_name, content_data.file_name(), uint32_t(disposition), uint32_t(result));
++
+     if (license_mask_ptr && XSUCCEEDED(result)) {
+       *license_mask_ptr = content_license;
+     }
 diff --git a/src/kernel/xam/xam_ui.cpp b/src/kernel/xam/xam_ui.cpp
 index 5a572ce..d3d1a23 100644
 --- a/src/kernel/xam/xam_ui.cpp

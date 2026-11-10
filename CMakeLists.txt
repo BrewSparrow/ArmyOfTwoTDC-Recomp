@@ -62,5 +62,11 @@ endif()
 if(TARGET ao2dc_AO4_Main)
     target_sources(ao2dc_AO4_Main PRIVATE
         src/main_hooks/task_wait_hook.cpp
-        src/main_hooks/stack_sampler.cpp)
+        src/main_hooks/stack_sampler.cpp
+        src/main_hooks/frame_rate_hook.cpp
+        src/main_hooks/xas_check_hook.cpp
+        src/main_hooks/filter_recorder.cpp
+        src/main_hooks/mix_writer_probe.cpp
+        src/main_hooks/centre_recorder.cpp
+        src/main_hooks/ping_capture.cpp)
 endif()

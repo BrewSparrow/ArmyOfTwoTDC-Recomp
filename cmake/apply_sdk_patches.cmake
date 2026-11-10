@@ -22,11 +22,21 @@ file(GLOB AO2DC_SDK_PATCHES "${AO2DC_PATCH_DIR}/*.patch")
 list(SORT AO2DC_SDK_PATCHES)
 foreach(patch IN LISTS AO2DC_SDK_PATCHES)
     get_filename_component(patch_name "${patch}" NAME)
-    execute_process(
+    set(already_applied 1)
+    if(patch_name STREQUAL "0006-audio-underrun-fade-and-diagnostics.patch")
+        file(READ "${AO2DC_SDK_DIR}/src/audio/xma_context.cpp" ao2dc_audio_patch_marker)
+        string(FIND "${ao2dc_audio_patch_marker}" "Ao2dcXmaPeakCheck" ao2dc_audio_patch_marker_offset)
+        if(NOT ao2dc_audio_patch_marker_offset EQUAL -1)
+            set(already_applied 0)
+        endif()
+    endif()
+    if(already_applied EQUAL 1)
+        execute_process(
         COMMAND "${GIT_EXECUTABLE}" apply --reverse --check --ignore-whitespace "${patch}"
         WORKING_DIRECTORY "${AO2DC_SDK_DIR}"
         RESULT_VARIABLE already_applied
         OUTPUT_QUIET ERROR_QUIET)
+    endif()
     if(already_applied EQUAL 0)
         message(STATUS "SDK patch already applied: ${patch_name}")
         continue()

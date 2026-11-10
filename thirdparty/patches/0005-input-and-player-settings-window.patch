@@ -1,3 +1,54 @@
+diff --git a/include/rex/rex_app.h b/include/rex/rex_app.h
+index 1f52480..205759f 100644
+--- a/include/rex/rex_app.h
++++ b/include/rex/rex_app.h
+@@ -304,6 +304,8 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
+   // Built-in overlays
+   std::shared_ptr<LogCaptureSink> log_sink_;
+   std::unique_ptr<ui::DebugOverlayDialog> debug_overlay_;
++  std::unique_ptr<ui::FpsCounterDialog> fps_counter_;
++  void SyncFpsCounter();
+   std::unique_ptr<ui::ConsoleDialog> console_overlay_;
+   std::unique_ptr<ui::SettingsDialog> settings_overlay_;
+   std::unique_ptr<ui::ImGuiDialog> achievements_overlay_;
+diff --git a/include/rex/ui/overlay/debug_overlay.h b/include/rex/ui/overlay/debug_overlay.h
+index e15e410..5267127 100644
+--- a/include/rex/ui/overlay/debug_overlay.h
++++ b/include/rex/ui/overlay/debug_overlay.h
+@@ -12,6 +12,7 @@
+ #pragma once
+ #include <rex/ui/imgui_dialog.h>
+ #include <array>
++#include <chrono>
+ #include <cstdint>
+ #include <functional>
+ 
+@@ -44,4 +45,25 @@ class DebugOverlayDialog : public ImGuiDialog {
+ #endif
+ };
+ 
++// Small always-on-top FPS counter (the show_fps setting, toggled in the F4 settings window).
++// Counts guest frames (game swaps), not host repaints. Ignores all input.
++class FpsCounterDialog : public ImGuiDialog {
++ public:
++  explicit FpsCounterDialog(ImGuiDrawer* imgui_drawer);
++  ~FpsCounterDialog();
++
++ protected:
++  void OnDraw(ImGuiIO& io) override;
++
++ private:
++  std::chrono::steady_clock::time_point window_start_{};
++  uint64_t window_start_frames_ = 0;
++  double fps_ = 0.0;
++  double frame_ms_ = 0.0;
++  bool have_value_ = false;
++};
++
++// Current value of the show_fps setting.
++bool IsFpsCounterEnabled();
++
+ }  // namespace rex::ui
 diff --git a/include/rex/ui/overlay/settings_overlay.h b/include/rex/ui/overlay/settings_overlay.h
 index 5b80eac..cce3808 100644
 --- a/include/rex/ui/overlay/settings_overlay.h
@@ -10,6 +61,21 @@ index 5b80eac..cce3808 100644
  };
  
  }  // namespace rex::ui
+diff --git a/include/rex/ui/presenter.h b/include/rex/ui/presenter.h
+index afb4a30..c213bc3 100644
+--- a/include/rex/ui/presenter.h
++++ b/include/rex/ui/presenter.h
+@@ -53,6 +53,10 @@ namespace ui {
+ class Presenter;
+ class Window;
+ 
++// Number of guest frames handed to the presenter so far (one per guest swap). Used by the FPS
++// counter.
++uint64_t GetGuestFrameCount();
++
+ class UIDrawContext {
+  public:
+   UIDrawContext(const UIDrawContext& context) = delete;
 diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
 index 3f9422d..cf73a02 100644
 --- a/src/input/mnk/mnk_input_driver.cpp
@@ -112,11 +178,84 @@ index 3f9422d..cf73a02 100644
    }
    // Drained unconditionally: deltas keep accumulating in OnMouseMove while the
    // mouse is off, and toggling it on would otherwise dump the whole backlog
+diff --git a/src/ui/overlay/debug_overlay.cpp b/src/ui/overlay/debug_overlay.cpp
+index 43d6c06..b4788f5 100644
+--- a/src/ui/overlay/debug_overlay.cpp
++++ b/src/ui/overlay/debug_overlay.cpp
+@@ -10,15 +10,68 @@
+  *              See LICENSE file in the project root for full license text.
+  */
+ #include <rex/ui/overlay/debug_overlay.h>
++#include <rex/cvar.h>
++#include <rex/ui/presenter.h>
+ #include <rex/version.h>
+ #include <imgui.h>
++#include <cstdio>
+ #ifdef REXGLUE_ENABLE_PERF_COUNTERS
+ #include <rex/perf/counter.h>
+ #include <cinttypes>
+ #endif
+ 
++REXCVAR_DEFINE_BOOL(show_fps, false, "UI", "Show an FPS counter in the top-right corner");
++
+ namespace rex::ui {
+ 
++bool IsFpsCounterEnabled() {
++  return REXCVAR_GET(show_fps);
++}
++
++FpsCounterDialog::FpsCounterDialog(ImGuiDrawer* imgui_drawer) : ImGuiDialog(imgui_drawer) {
++  window_start_ = std::chrono::steady_clock::now();
++  window_start_frames_ = GetGuestFrameCount();
++}
++
++FpsCounterDialog::~FpsCounterDialog() {}
++
++void FpsCounterDialog::OnDraw(ImGuiIO& io) {
++  // Average over half-second windows so the number is readable.
++  auto now = std::chrono::steady_clock::now();
++  uint64_t frames = GetGuestFrameCount();
++  double elapsed = std::chrono::duration<double>(now - window_start_).count();
++  if (elapsed >= 0.5) {
++    uint64_t delta = frames - window_start_frames_;
++    fps_ = double(delta) / elapsed;
++    frame_ms_ = delta ? elapsed * 1000.0 / double(delta) : 0.0;
++    have_value_ = true;
++    window_start_ = now;
++    window_start_frames_ = frames;
++  }
++
++  char text[64];
++  if (have_value_) {
++    snprintf(text, sizeof(text), "%.0f FPS  %.1f ms", fps_, frame_ms_);
++  } else {
++    snprintf(text, sizeof(text), "-- FPS");
++  }
++  ImVec4 color = fps_ >= 28.0 || !have_value_ ? ImVec4(0.55f, 1.0f, 0.55f, 1.0f)
++               : fps_ >= 20.0                 ? ImVec4(1.0f, 0.85f, 0.35f, 1.0f)
++                                              : ImVec4(1.0f, 0.45f, 0.40f, 1.0f);
++  float margin = 10.0f;
++  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - margin, margin), ImGuiCond_Always,
++                          ImVec2(1.0f, 0.0f));
++  ImGui::SetNextWindowBgAlpha(0.45f);
++  if (ImGui::Begin("##fps_counter", nullptr,
++                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
++                       ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings |
++                       ImGuiWindowFlags_NoFocusOnAppearing |
++                       ImGuiWindowFlags_AlwaysAutoResize)) {
++    ImGui::TextColored(color, "%s", text);
++  }
++  ImGui::End();
++}
++
+ DebugOverlayDialog::DebugOverlayDialog(ImGuiDrawer* imgui_drawer, FrameStatsProvider stats_provider)
+     : ImGuiDialog(imgui_drawer), stats_provider_(std::move(stats_provider)) {}
+ 
 diff --git a/src/ui/overlay/settings_overlay.cpp b/src/ui/overlay/settings_overlay.cpp
-index 4ede107..13a71ae 100644
+index 4ede107..5689544 100644
 --- a/src/ui/overlay/settings_overlay.cpp
 +++ b/src/ui/overlay/settings_overlay.cpp
-@@ -156,8 +156,358 @@ static rex::ui::VirtualKey ImGuiKeyToVirtualKey(ImGuiKey key) {
+@@ -156,8 +156,364 @@ static rex::ui::VirtualKey ImGuiKeyToVirtualKey(ImGuiKey key) {
    }
  }
  
@@ -390,6 +529,12 @@ index 4ede107..13a71ae 100644
 +        if (ImGui::Checkbox("##vsync", &vsync)) {
 +          set("vsync", vsync ? "true" : "false");
 +        }
++        bool show_fps = get("show_fps") == "true";
++        ImGui::Text("Show FPS counter");
++        ImGui::SameLine(220.0f);
++        if (ImGui::Checkbox("##showfps", &show_fps)) {
++          set("show_fps", show_fps ? "true" : "false");
++        }
 +        bool letterbox = get("present_letterbox") == "true";
 +        ImGui::Text("Keep 16:9 aspect ratio");
 +        ImGui::SameLine(220.0f);
@@ -475,7 +620,7 @@ index 4ede107..13a71ae 100644
  
    // Collect sorted unique category paths.
    std::set<std::string> category_set;
-@@ -507,6 +857,8 @@ void SettingsDialog::OnDraw(ImGuiIO& /*io*/) {
+@@ -507,6 +863,8 @@ void SettingsDialog::OnDraw(ImGuiIO& /*io*/) {
    }
    ImGui::SameLine();
    ImGui::TextDisabled("(%s)", config_path_.filename().string().c_str());
@@ -484,11 +629,70 @@ index 4ede107..13a71ae 100644
  
    ImGui::End();
  }
+diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
+index 7360ed9..d50b7c2 100644
+--- a/src/ui/presenter.cpp
++++ b/src/ui/presenter.cpp
+@@ -277,6 +277,14 @@ GuestOutputPaintConfig BuildGuestOutputPaintConfigFromCVar() {
+ namespace rex {
+ namespace ui {
+ 
++namespace {
++std::atomic<uint64_t> g_guest_frame_count{0};
++}  // namespace
++
++uint64_t GetGuestFrameCount() {
++  return g_guest_frame_count.load(std::memory_order_relaxed);
++}
++
+ void Presenter::FatalErrorHostGpuLossCallback([[maybe_unused]] bool is_responsible,
+                                               [[maybe_unused]] bool statically_from_ui_thread) {
+   rex::FatalError("Graphics device lost (probably due to an internal error)");
+@@ -550,6 +558,7 @@ bool Presenter::RefreshGuestOutput(
+     uint32_t frontbuffer_width, uint32_t frontbuffer_height, uint32_t display_aspect_ratio_x,
+     uint32_t display_aspect_ratio_y,
+     std::function<bool(GuestOutputRefreshContext& context)> refresher) {
++  g_guest_frame_count.fetch_add(1, std::memory_order_relaxed);
+   GuestOutputProperties& writable_properties =
+       guest_output_properties_[guest_output_mailbox_writable_];
+   writable_properties.frontbuffer_width = frontbuffer_width;
+diff --git a/src/ui/renderdoc_api.cpp b/src/ui/renderdoc_api.cpp
+index e1a5287..87e3d49 100644
+--- a/src/ui/renderdoc_api.cpp
++++ b/src/ui/renderdoc_api.cpp
+@@ -50,5 +50,16 @@ RenderDocAPI::~RenderDocAPI() {
+   library_.Close();
+ }
+ 
++// AO2DC: capture the next frame when the game runs under RenderDoc (bound to a key in ReXApp).
++// Returns false when RenderDoc is not attached.
++bool TriggerRenderDocCapture() {
++  static std::unique_ptr<RenderDocAPI> api = RenderDocAPI::CreateIfConnected();
++  if (!api || !api->api_1_0_0()) {
++    return false;
++  }
++  api->api_1_0_0()->TriggerCapture();
++  return true;
++}
++
+ }  // namespace ui
+ }  // namespace rex
 diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
-index b94fe9e..a537921 100644
+index b94fe9e..90cd0f0 100644
 --- a/src/ui/rex_app.cpp
 +++ b/src/ui/rex_app.cpp
-@@ -340,8 +340,10 @@ bool ReXApp::SetupPresentation() {
+@@ -51,6 +51,10 @@ REXCVAR_DEFINE_STRING(gpu_plugin, "", "GPU",
+                       "GPU emulation")
+     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+ 
++namespace rex::ui {
++bool TriggerRenderDocCapture();  // ui/renderdoc_api.cpp
++}
++
+ namespace rex {
+ 
+ // --- ReXApp ---
+@@ -340,8 +344,10 @@ bool ReXApp::SetupPresentation() {
      return false;
    }
  
@@ -501,3 +705,57 @@ index b94fe9e..a537921 100644
    window_->SetTitle(title);
  
    window_->AddListener(this);
+@@ -416,6 +422,11 @@ void ReXApp::SetupOverlays(rex::ui::Presenter* presenter, rex::ui::ImmediateDraw
+       settings_overlay_ = std::make_unique<ui::SettingsDialog>(imgui_drawer_.get(), config_path_);
+     }
+   });
++  rex::ui::RegisterBind("bind_renderdoc_capture", "F11", "Capture a frame (when running under RenderDoc)",
++                        [] {
++                          const bool ok = rex::ui::TriggerRenderDocCapture();
++                          REXLOG_INFO("RenderDoc capture {}", ok ? "requested" : "unavailable (not attached)");
++                        });
+   rex::ui::RegisterBind("bind_achievements", "F7", "Toggle achievements overlay", [this] {
+     if (achievements_overlay_) {
+       achievements_overlay_.reset();
+@@ -424,6 +435,13 @@ void ReXApp::SetupOverlays(rex::ui::Presenter* presenter, rex::ui::ImmediateDraw
+     }
+   });
+ 
++  // FPS counter follows the show_fps setting (F4 window); the dialog exists only while it is
++  // shown, so the ImGui drawer stays detached when nothing else is open.
++  rex::cvar::RegisterChangeCallback("show_fps", [this](std::string_view, std::string_view) {
++    app_context().CallInUIThreadDeferred([this]() { SyncFpsCounter(); });
++  });
++  SyncFpsCounter();
++
+   OnCreateDialogs(imgui_drawer_.get());
+ }
+ 
+@@ -575,6 +593,8 @@ void ReXApp::OnDestroy() {
+   settings_overlay_.reset();
+   console_overlay_.reset();
+   debug_overlay_.reset();
++  rex::cvar::UnregisterChangeCallbacks("show_fps");
++  fps_counter_.reset();
+   if (imgui_drawer_) {
+     imgui_drawer_->SetPresenterAndImmediateDrawer(nullptr, nullptr);
+     imgui_drawer_.reset();
+@@ -606,6 +626,18 @@ void ReXApp::OnDestroy() {
+   runtime_.reset();
+ }
+ 
++void ReXApp::SyncFpsCounter() {
++  if (!imgui_drawer_) {
++    return;
++  }
++  bool want = ui::IsFpsCounterEnabled();
++  if (want && !fps_counter_) {
++    fps_counter_ = std::make_unique<ui::FpsCounterDialog>(imgui_drawer_.get());
++  } else if (!want && fps_counter_) {
++    fps_counter_.reset();
++  }
++}
++
+ void ReXApp::SetGuestFrameStats(ui::DebugOverlayDialog::FrameStatsProvider provider) {
+   frame_stats_provider_ = provider;
+   if (debug_overlay_) {

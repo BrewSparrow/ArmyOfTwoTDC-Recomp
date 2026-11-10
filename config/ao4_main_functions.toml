@@ -861,3 +861,387 @@ address = 0x83240658
 name = "Ao2dcWaitForTaskFunction"
 registers = ["r11", "r3", "r31"]
 jump_address_on_true = 0x83240660
+
+# Optional 60 FPS (ao2dc_frame_rate, src/main_hooks/frame_rate_hook.cpp).
+# Frame pacer: 0x82EED238 in sub_82EED220, right after `lwz r29,44(r3)` (r3 = pacer, r29 = settings).
+[[midasm_hook]]
+address = 0x82EED238
+name = "Ao2dcFramePacer"
+registers = ["r3", "r29"]
+
+# Frame calibration: 0x82EE72F4 in sub_82EE7220, right after `addi r11,r11,2`.
+[[midasm_hook]]
+address = 0x82EE72F4
+name = "Ao2dcCalibrationStep"
+registers = ["r11"]
+
+# Pacer constructor: 0x82EED064 in sub_82EED050, before `mr r30,r5` (r5 = fixed rate).
+[[midasm_hook]]
+address = 0x82EED064
+name = "Ao2dcPacerConstruct"
+registers = ["r5"]
+
+# D3D flip interval: 0x82CB85EC in the flip callback sub_82CB85A0, right after
+# `rlwinm r29,r30,24,28,31` (r29 = vblank interval).
+[[midasm_hook]]
+address = 0x82CB85EC
+name = "Ao2dcFlipInterval"
+registers = ["r29"]
+
+# EA-XAS decoder diagnostics (ao2dc_xas_check, src/main_hooks/xas_check_hook.cpp).
+# sub_8388FE88: 0x8388FE9C is the first input load (r4 = block, r5 = output); 0x83890268 follows
+# the decode loop.
+[[midasm_hook]]
+address = 0x8388FE9C
+name = "Ao2dcXasBlockStart"
+registers = ["r4", "r5"]
+
+[[midasm_hook]]
+address = 0x83890268
+name = "Ao2dcXasBlockEnd"
+registers = []
+
+# EaLayer3 (decoder B) output-stage diagnostics (ao2dc_xas_check, src/main_hooks/xas_check_hook.cpp):
+# clamp-high / clamp-low stores and the float-path store in sub_838D8668 and sub_838D8BC0.
+[[midasm_hook]]
+address = 0x838D8974
+name = "Ao2dcL3Clamp"
+registers = []
+
+[[midasm_hook]]
+address = 0x838D8984
+name = "Ao2dcL3Clamp"
+registers = []
+
+[[midasm_hook]]
+address = 0x838D8918
+name = "Ao2dcL3Float"
+registers = ["f13"]
+
+[[midasm_hook]]
+address = 0x838D8E38
+name = "Ao2dcL3Clamp"
+registers = []
+
+[[midasm_hook]]
+address = 0x838D8E48
+name = "Ao2dcL3Clamp"
+registers = []
+
+[[midasm_hook]]
+address = 0x838D8DD0
+name = "Ao2dcL3Float"
+registers = ["f13"]
+
+# Layer III decoder activity counters (ao2dc_xas_check): antialias entry of decoder A and B,
+# and the fctiwz of decoder B's 16-bit output path.
+[[midasm_hook]]
+address = 0x838B941C
+name = "Ao2dcL3GranuleA"
+registers = []
+
+[[midasm_hook]]
+address = 0x838DB70C
+name = "Ao2dcL3GranuleB"
+registers = []
+
+[[midasm_hook]]
+address = 0x838D8990
+name = "Ao2dcL3IntSample"
+registers = []
+
+[[midasm_hook]]
+address = 0x838D8E54
+name = "Ao2dcL3IntSample"
+registers = []
+
+# Mixer filter design diagnostics (ao2dc_xas_check): sub_838A5CC0 after its coefficient stores.
+[[midasm_hook]]
+address = 0x838A5DB8
+name = "Ao2dcFilterDesign"
+registers = ["r31", "f30", "f31"]
+
+# More mixer filter-design diagnostics (ao2dc_xas_check): designers B, C (scalar) and V1, V2 (vector).
+[[midasm_hook]]
+address = 0x838A5B18
+name = "Ao2dcFilterDesignB"
+registers = ["r31"]
+
+[[midasm_hook]]
+address = 0x838A5CA4
+name = "Ao2dcFilterDesignC"
+registers = ["r31"]
+
+[[midasm_hook]]
+address = 0x838A3F28
+name = "Ao2dcFilterDesignV1"
+registers = ["r31"]
+
+[[midasm_hook]]
+address = 0x838A3CCC
+name = "Ao2dcFilterDesignV2"
+registers = ["r31"]
+
+# Audio mix-job threading test (ao2dc_audio_single_mix_job, src/main_hooks/xas_check_hook.cpp).
+[[midasm_hook]]
+address = 0x82E3B734
+name = "Ao2dcAudioMultipleMixJobs"
+registers = ["r6"]
+
+[[midasm_hook]]
+address = 0x82E3B73C
+name = "Ao2dcAudioMaxMixJobThreads"
+registers = ["r11"]
+
+# Biquad runaway check (ao2dc_xas_check): sub_838A58C0 after its 8-sample loop.
+[[midasm_hook]]
+address = 0x838A5A50
+name = "Ao2dcBiquadEnd"
+registers = ["f6", "f3", "r6", "r3"]
+
+# Filter transaction recorder (ao2dc_filter_rec, src/main_hooks/filter_recorder.cpp):
+# sub_838A58C0 entry after the prologue (arguments still in r3-r7, caller LR at r1+184) and the
+# common exit at 0x838A5A68 (both the unrolled loop and the generic sub_838A5750 path reach it).
+[[midasm_hook]]
+address = 0x838A58D4
+name = "Ao2dcFilterRecEntry"
+registers = ["r1", "r3", "r4", "r5", "r6", "r7"]
+
+[[midasm_hook]]
+address = 0x838A5A68
+name = "Ao2dcFilterRecExit"
+registers = []
+
+# Mix writer probe (ao2dc_mix_probe, src/main_hooks/mix_writer_probe.cpp): sub_83CA7D40 after its
+# wait succeeds and before it copies the interleaved buffer at *(r31+60) for submission.
+[[midasm_hook]]
+address = 0x83CA7DC4
+name = "Ao2dcMixProbeSubmit"
+registers = ["r31"]
+
+# Mix writer probe: entry of sub_83CABE50, the VMX volume-ramp kernel that writes the submitted
+# interleaved buffer (r3 = parameter block: +0 src, +4 dst, +8/+12 gain pointers, +20 count,
+# +24 layout, +32 accumulate, +36 mono flag).
+[[midasm_hook]]
+address = 0x83CABE50
+name = "Ao2dcMixProbeKernel"
+registers = ["r3"]
+
+# Mix writer probe: XAudio2 source voice memcpy of the queued client buffer into the voice's input
+# scratch, in sub_83CC7E18 (both call sites; r3 dst, r4 src, r5 bytes, r31 voice).
+[[midasm_hook]]
+address = 0x83CC7E8C
+name = "Ao2dcMixProbeVoiceCopy"
+registers = ["r3", "r4", "r5", "r31"]
+
+[[midasm_hook]]
+address = 0x83CC7EAC
+name = "Ao2dcMixProbeVoiceCopy"
+registers = ["r3", "r4", "r5", "r31"]
+
+# The copy that actually fills the voice scratch each frame (client buffer tail -> scratch).
+[[midasm_hook]]
+address = 0x83CC7F3C
+name = "Ao2dcMixProbeVoiceCopy"
+registers = ["r3", "r4", "r5", "r31"]
+
+# Centre-path transaction recorder (ao2dc_centre_rec, src/main_hooks/centre_recorder.cpp).
+# AudioCore graph: generator dispatch in sub_838A63E8 and plugin dispatch in sub_838A6780.
+[[midasm_hook]]
+address = 0x838A64A4
+name = "Ao2dcCentreGenBefore"
+registers = ["r3", "r4"]
+
+[[midasm_hook]]
+address = 0x838A64A8
+name = "Ao2dcCentreGenAfter"
+registers = ["r3", "r25", "r26", "r27", "r30", "r31"]
+
+[[midasm_hook]]
+address = 0x838A68F4
+name = "Ao2dcCentreProcBefore"
+registers = ["r3", "r4"]
+
+[[midasm_hook]]
+address = 0x838A68F8
+name = "Ao2dcCentreProcAfter"
+registers = ["r3", "r25", "r28", "r29", "r30", "r31"]
+
+# AudioCore output stage sub_8388D980: the clamp call sub_838BDD20(buf, 1536, f1, f2) and after.
+[[midasm_hook]]
+address = 0x8388DB1C
+name = "Ao2dcCentreClampBefore"
+registers = ["r3", "r6", "f1", "f2"]
+
+[[midasm_hook]]
+address = 0x8388DB20
+name = "Ao2dcCentreClampAfter"
+registers = ["r31"]
+
+[[midasm_hook]]
+address = 0x8388D990
+name = "Ao2dcCentreOutputEntry"
+registers = ["r4"]
+
+# Gain-writer probe (ao2dc_mix_probe_gain): entry of the AudioCore gain plugin process function.
+[[midasm_hook]]
+address = 0x83887E78
+name = "Ao2dcMixProbeGain"
+registers = ["r3", "r5"]
+
+# Centre recorder, aligned voice-source points in sub_838A63E8: generator process (decoder /
+# sample player / resampler), the sub_838A6320 silence fallback, and the assembled node block.
+[[midasm_hook]]
+address = 0x838A6540
+name = "Ao2dcCentreGenProcBefore"
+registers = ["r3", "r4"]
+
+[[midasm_hook]]
+address = 0x838A6544
+name = "Ao2dcCentreGenProcAfter"
+registers = ["r3", "r19", "r25", "r26", "r30", "r31"]
+
+[[midasm_hook]]
+address = 0x838A6560
+name = "Ao2dcCentreFallbackBefore"
+registers = ["r3", "r5"]
+
+[[midasm_hook]]
+address = 0x838A6564
+name = "Ao2dcCentreFallbackAfter"
+registers = ["r3", "r25", "r26", "r30", "r31"]
+
+[[midasm_hook]]
+address = 0x838A6654
+name = "Ao2dcCentreNodeOut"
+registers = ["r21", "r25", "r26"]
+
+# Creation watch (ao2dc_create_watch, src/main_hooks/mix_writer_probe.cpp): entry of
+# sub_8386AEC8, which initialises the embedded type-0x82A11114 object of AudioCore nodes/plugins.
+[[midasm_hook]]
+address = 0x8386AEC8
+name = "Ao2dcCreateWatchInit"
+registers = ["r3"]
+
+# Gain init watch (ao2dc_gain_init_watch): end of the AudioCore gain plugin init sub_8388AA40,
+# after the defaults are written (r31 = new plugin).
+[[midasm_hook]]
+address = 0x8388AA80
+name = "Ao2dcGainInitWatch"
+registers = ["r31"]
+
+# AudioCore parameter-set requests (ao2dc_param_set_log): entry of sub_83869D08
+# (r3 = plugin, r4 = parameter index, f1 = value).
+[[midasm_hook]]
+address = 0x83869D08
+name = "Ao2dcParamSet"
+registers = ["r3", "r4", "f1"]
+
+# Staging watch (ao2dc_staging_watch): game parameter flush sub_82E2CC20, before
+# "lfs f1,4(r11)" at 0x82E2CCDC (r11+4 = staging slot, r27 = plugin, r30 = parameter index).
+[[midasm_hook]]
+address = 0x82E2CCDC
+name = "Ao2dcStagingWatch"
+registers = ["r11", "r27", "r30"]
+
+# Game voice gain calculation inputs (ao2dc_gain_calc_log): sub_82E2A040 just before it calls
+# sub_82E1F088 with f1 = f31 and f2 = f30 (gain).
+[[midasm_hook]]
+address = 0x82E2B41C
+name = "Ao2dcGainCalc"
+registers = ["r1", "r14", "r16", "r20", "r31", "f30", "f31"]
+
+# Game parameter staging (ao2dc_stage_set_log): entry of sub_82E2CFC0
+# (r3 = patch, r4 = parameter reference, r5 = index, f1 = value).
+[[midasm_hook]]
+address = 0x82E2CFC0
+name = "Ao2dcStageSet"
+registers = ["r1", "r3", "r4", "r5", "f1"]
+
+# Same gain calculation, second call site (0x82E2B458), before "fmr f2,f30" at 0x82E2B44C.
+[[midasm_hook]]
+address = 0x82E2B44C
+name = "Ao2dcGainCalc"
+registers = ["r1", "r14", "r16", "r20", "r31", "f30", "f31"]
+
+# EA-XAS decoder capture (ao2dc_xas_capture): entry of sub_8388FE88 (r4 = block, r5 = output)
+# and its tail after the decode loop.
+[[midasm_hook]]
+address = 0x8388FE88
+name = "Ao2dcXasEntry"
+registers = ["r4", "r5"]
+
+[[midasm_hook]]
+address = 0x83890268
+name = "Ao2dcXasExit"
+registers = []
+
+# Sample-entry gain writer (ao2dc_entry_gain_watch): sub_83ED8858 right after it stores the
+# default 1.0 at entry+20 (r31 = entry).
+[[midasm_hook]]
+address = 0x83ED88C4
+name = "Ao2dcEntryGainWatch"
+registers = ["r31"]
+
+# Opt-in pre-clip bus trim / statistics (ao2dc_preclip_trim, ao2dc_preclip_stats):
+# entry of AudioCore's hard clip sub_83887878 (r3 = plugin, r4 = ctx).
+[[midasm_hook]]
+address = 0x83887878
+name = "Ao2dcPreClip"
+registers = ["r3", "r4"]
+
+# SndPlayer instrumentation (ao2dc_sndplayer_log), sub_83876660 exits:
+# 0x83876CA4 returns 0 (starved), 0x83876CB0 segment format switch, 0x838768A8 / 0x83876CD4 return 1.
+[[midasm_hook]]
+address = 0x83876CA4
+name = "Ao2dcSndStarve"
+registers = ["r28", "r31"]
+
+[[midasm_hook]]
+address = 0x83876CB0
+name = "Ao2dcSndFormat"
+registers = ["r28", "r31"]
+
+[[midasm_hook]]
+address = 0x838768A8
+name = "Ao2dcSndOk"
+registers = ["r31"]
+
+[[midasm_hook]]
+address = 0x83876CD4
+name = "Ao2dcSndOk"
+registers = ["r31"]
+
+# Ping capture (ao2dc_ping_capture): entry of sub_82E218B8, the audio system per-frame update
+# (r3 = audio system object).
+[[midasm_hook]]
+address = 0x82E218B8
+name = "Ao2dcPingAudioSys"
+registers = ["r3"]
+
+# Ping capture, zoom foley (FL_Wpn_Zoom) requests: the two callers of sub_82F5D2E0, each hooked
+# before its "bl". 0x82FF7F28 in sub_82FF7D80: r3 = weapon sound state, r4 = zoom level,
+# r20 = weapon, r28 = owner. 0x83074094 in sub_83073FC0: r3, r4 = zoom flag, r30 = owner,
+# r31 = weapon component.
+[[midasm_hook]]
+address = 0x82FF7F28
+name = "Ao2dcPingZoomA"
+registers = ["r1", "r3", "r4", "r20", "r28"]
+
+[[midasm_hook]]
+address = 0x83074094
+name = "Ao2dcPingZoomB"
+registers = ["r1", "r3", "r4", "r30", "r31"]
+
+# Ping capture: entry of sub_82F5D030, which posts the pending foley event (ZoomIn / ZoomOut)
+# to the weapon's foley sound (r3 = weapon sound state).
+[[midasm_hook]]
+address = 0x82F5D030
+name = "Ao2dcPingFoley"
+registers = ["r1", "r3"]
+
+# Ping capture: entry of sub_82E39440, the emitter update (r3 = emitter).
+[[midasm_hook]]
+address = 0x82E39440
+name = "Ao2dcPingEmitter"
+registers = ["r1", "r3"]

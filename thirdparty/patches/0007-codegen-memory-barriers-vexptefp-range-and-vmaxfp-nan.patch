@@ -1,0 +1,110 @@
+diff --git a/src/codegen/builders/system.cpp b/src/codegen/builders/system.cpp
+index b2d70f5..1e6deed 100644
+--- a/src/codegen/builders/system.cpp
++++ b/src/codegen/builders/system.cpp
+@@ -30,21 +30,23 @@ bool build_attn(BuilderContext& ctx) {
+   return true;
+ }
+ 
++// Local change (AO2DC): x86 orders memory strongly, but the C++ compiler does not: with these
++// emitted as nothing, clang was free to reorder, merge or hoist the plain loads and stores the
++// guest code fenced, which breaks lock-free handoffs between guest threads (a job worker saw a
++// task claimable before its function pointer was stored). Emit compiler barriers, which cost
++// nothing at run time, and a real fence for sync (x86 still reorders a store before a load).
+ bool build_sync(BuilderContext& ctx) {
+-  // Memory barrier, x86 has strong ordering so this is a no-op
+-  (void)ctx;
++  ctx.println("\t__atomic_thread_fence(__ATOMIC_SEQ_CST);");
+   return true;
+ }
+ 
+ bool build_lwsync(BuilderContext& ctx) {
+-  // Lightweight memory barrier, x86 has strong ordering so this is a no-op
+-  (void)ctx;
++  ctx.println("\t__atomic_signal_fence(__ATOMIC_SEQ_CST);");
+   return true;
+ }
+ 
+ bool build_eieio(BuilderContext& ctx) {
+-  // Enforce in-order execution of I/O, x86 has strong ordering so this is a no-op
+-  (void)ctx;
++  ctx.println("\t__atomic_signal_fence(__ATOMIC_SEQ_CST);");
+   return true;
+ }
+ 
+diff --git a/src/codegen/builders/vector.cpp b/src/codegen/builders/vector.cpp
+index cbdd7f7..a587a28 100644
+--- a/src/codegen/builders/vector.cpp
++++ b/src/codegen/builders/vector.cpp
+@@ -113,15 +113,40 @@ bool build_vnmsubfp(BuilderContext& ctx) {
+   return true;
+ }
+ 
++// vmaxfp/vminfp: VMX returns a NaN when either operand is a NaN (the first NaN operand,
++// quieted). x86 maxps/minps return the second operand whenever either one is a NaN, so
++// max(NaN, x) became x - a clamp then turned an invalid value into the clamp bound (e.g. a gain
++// computed as NaN came out as the maximum gain). Propagate the NaN as the hardware does.
++static void emit_vec_fp_minmax_nan(BuilderContext& ctx, const char* simd_op) {
++  const auto d = ctx.v(ctx.insn.operands[0]);
++  const auto a = ctx.v(ctx.insn.operands[1]);
++  const auto b = ctx.v(ctx.insn.operands[2]);
++  ctx.println("	{{");
++  ctx.println("		simde__m128 ao2dc_a = simde_mm_load_ps({}.f32);", a);
++  ctx.println("		simde__m128 ao2dc_b = simde_mm_load_ps({}.f32);", b);
++  ctx.println("		simde__m128 ao2dc_r = simde_mm_{}_ps(ao2dc_a, ao2dc_b);", simd_op);
++  // NaN in a wins over everything; else a NaN in b (maxps/minps already return b then).
++  ctx.println("		simde__m128 ao2dc_na = simde_mm_cmpunord_ps(ao2dc_a, ao2dc_a);");
++  ctx.println("		simde__m128 ao2dc_nb = simde_mm_cmpunord_ps(ao2dc_b, ao2dc_b);");
++  ctx.println("		ao2dc_r = simde_mm_or_ps(simde_mm_and_ps(ao2dc_na, ao2dc_a), "
++              "simde_mm_andnot_ps(ao2dc_na, ao2dc_r));");
++  // Quiet the NaN lanes (set the quiet bit), as the hardware returns a QNaN.
++  ctx.println("		simde__m128 ao2dc_nan = simde_mm_or_ps(ao2dc_na, ao2dc_nb);");
++  ctx.println("		ao2dc_r = simde_mm_or_ps(ao2dc_r, simde_mm_and_ps(ao2dc_nan, "
++              "simde_mm_castsi128_ps(simde_mm_set1_epi32(0x00400000))));");
++  ctx.println("		simde_mm_store_ps({}.f32, ao2dc_r);", d);
++  ctx.println("	}}");
++}
++
+ bool build_vmaxfp(BuilderContext& ctx) {
+   ctx.emit_set_flush_mode(true);
+-  ctx.emit_vec_fp_binary("max");
++  emit_vec_fp_minmax_nan(ctx, "max");
+   return true;
+ }
+ 
+ bool build_vminfp(BuilderContext& ctx) {
+   ctx.emit_set_flush_mode(true);
+-  ctx.emit_vec_fp_binary("min");
++  emit_vec_fp_minmax_nan(ctx, "min");
+   return true;
+ }
+ 
+@@ -147,7 +172,15 @@ bool build_vexptefp(BuilderContext& ctx) {
+   auto vA = ctx.v(ctx.insn.operands[1]);
+   ctx.emit_set_flush_mode(true);
+   ctx.println("\t{{");
+-  ctx.println("\t\tsimde__m128 x = simde_mm_load_ps({}.f32);", vA);
++  // Local change (AO2DC): the exponent below is built by writing n + 127 into the float's
++  // exponent bits, which wraps outside n = -127...128: 2^-150 came out as -2^106 and -inf (from
++  // vlogefp(0), i.e. silence in a dB conversion) as NaN. Army of Two's audio mixer computes gains
++  // this way, so quiet voices played as full-scale bursts. Clamp to the range the construction
++  // handles (-127 gives 0, as the hardware's denormal flush does; 128 gives +inf) and pass NaN on.
++  ctx.println("\t\tsimde__m128 x_in = simde_mm_load_ps({}.f32);", vA);
++  ctx.println(
++      "\t\tsimde__m128 x = simde_mm_min_ps(simde_mm_max_ps(x_in, simde_mm_set1_ps(-127.0f)), "
++      "simde_mm_set1_ps(128.0f));");
+   ctx.println(
+       "\t\tsimde__m128 n = simde_mm_round_ps(x, "
+       "SIMDE_MM_FROUND_TO_NEG_INF | SIMDE_MM_FROUND_NO_EXC);");
+@@ -162,9 +195,10 @@ bool build_vexptefp(BuilderContext& ctx) {
+   // Construct 2^n by adding n to the IEEE 754 exponent bias and shifting into place
+   ctx.println("\t\tsimde__m128i exp_bits = simde_mm_slli_epi32(");
+   ctx.println("\t\t\tsimde_mm_add_epi32(simde_mm_cvttps_epi32(n), simde_mm_set1_epi32(127)), 23);");
++  ctx.println("\t\tsimde__m128 r = simde_mm_mul_ps(p, simde_mm_castsi128_ps(exp_bits));");
+   ctx.println(
+       "\t\tsimde_mm_store_ps({}.f32, "
+-      "simde_mm_mul_ps(p, simde_mm_castsi128_ps(exp_bits)));",
++      "simde_mm_blendv_ps(r, x_in, simde_mm_cmpunord_ps(x_in, x_in)));",
+       vD);
+   ctx.println("\t}}");
+   return true;

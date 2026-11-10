@@ -41,3 +41,6 @@ ao2dc_disable_ssao = true
 # Audio frames buffered ahead of the device (4-64; 256 samples each). 8 underran during heavy
 # moments (grenades) and clicked; 16 is ~85 ms.
 audio_maxqframes = 16
+
+# Frame rate for the game's frame pacer: 30 (the original) or 60 (experimental).
+ao2dc_frame_rate = 60

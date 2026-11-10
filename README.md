@@ -44,6 +44,12 @@ On top of the plain recompilation:
   hard-clipping when gunfire stacks several copies of a sound, and underruns fade instead of
   clicking. `ao2dc_audio_record` saves the last 90 s of the game's mix and of the device signal
   to `logs/` and enables the XMA diagnostics in the log.
+- **60 FPS (experimental)** - `ao2dc_frame_rate = 60` in `settings/hardware.toml` (restart
+  needed) makes the game's own frame pacer and its tick-based systems run at 60 at normal game
+  speed (`src/main_hooks/frame_rate_hook.cpp`). Tested at 60 from the start of the game through
+  the Cause and Effect mission; the default `0` keeps the original 30 FPS. Keep
+  `readback_resolve = "fast"` (the default) - `"full"` costs too much at 60 FPS.
+- **FPS counter** - "Show FPS counter" in the `F4` window (Display tab).
 - **Kernel fixes** - stale dispatch objects in reused memory (crash on `KeSetEvent`), instant
   storage-device selection.
 - **Crash report** - a crash writes the faulting call stack, with recompiled function names, to
@@ -110,16 +116,10 @@ version above. The build also prints them for every XEX it recompiles. Check the
 
 ## Building
 
-From a "x64 Native Tools Command Prompt for VS 2022" (or after running `vcvars64.bat`), with
-LLVM first on `PATH`:
-
-```
-cmake --preset win-amd64-release
-cmake --build out/build/win-amd64-release
-```
-
-The first build compiles the SDK, recompiles the game from `assets/` (this takes a while and a
-lot of memory) and compiles the generated code. Later builds only redo what changed.
+Put your dump in `assets/` (above) and run **`build_from_dump.bat`**. It checks the files and
+their SHA-256 hashes, finds the toolchain, recompiles the game and compiles the project. Your dump
+is never modified. **[BUILDING.md](BUILDING.md)** has the prerequisites, exact Windows 11 steps,
+the equivalent manual commands and troubleshooting.
 
 ## Running
 
