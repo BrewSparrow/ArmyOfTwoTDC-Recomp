@@ -1,4 +1,4 @@
-# Army of Two: The Devil's Cartel - PC recompilation
+# Army of Two: The Devil's Cartel - Xbox 360 recompilation
 
 <p align="center">
   <img src="docs/ArmyofTwo_TheDevilsCartel.jpeg" alt="Army of Two: The Devil's Cartel cover art" width="300">
