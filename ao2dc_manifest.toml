@@ -16,7 +16,9 @@ includes = []
 guest_path = "ao4.main.xex"
 file_path = "assets/AO4.Main.xex"
 out_directory_path = "generated/ao4_main"
-includes = ["config/ao4_main_functions.toml"]
+# The configure step copies ao4_main_functions.toml (disc) or ao4_main_functions_tu1.toml
+# (Title Update 1 in title_update/) to this file; see CMakeLists.txt.
+includes = ["config/ao4_main_functions_active.toml"]
 
 [[modules]]
 guest_path = "engine.buildinfo.xex"

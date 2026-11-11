@@ -1,0 +1,1734 @@
+# AO4.Main.xex codegen hints for Title Update 1 (0.0.1.11). Used instead of ao4_main_functions.toml
+# when title_update\ holds the update (CMakeLists.txt copies it to ao4_main_functions_active.toml). The update
+# relinks AO4.Main, so every address of the base file was relocated to the patched image and
+# checked (unique instruction-window match), new tail-branch targets and stubs added.
+
+# AO4.Main.xex codegen hints.
+
+# CRT setjmp/longjmp, redirected to the host's. Lua's protected calls depend on them
+# (luaD_rawrunprotected / luaD_throw). Same addresses as the XenonRecomp build's AO4.toml.
+setjmp_address = 0x83A3D750
+longjmp_address = 0x83A3DA20
+
+# Function starts the analyzer doesn't find on its own: six reached only by plain `b` tail
+# branches (UnresolvedCall errors), and the entry points the XenonRecomp build found that this
+# analysis missed (indirect call targets, e.g. 0x83E7E620 called at startup). Empty tables:
+# codegen discovers the natural boundaries.
+
+[functions]
+0x83EA5318 = {}  # TU 1: tail-branch target new in the update
+0x83EA5310 = {}  # TU 1: tail-branch target new in the update
+0x83EA5300 = {}  # TU 1: tail-branch target new in the update
+0x83EA52FC = {}  # TU 1: tail-branch target new in the update
+0x83DFE4F0 = {}  # TU 1: tail-branch target new in the update
+0x83D9FB48 = {}  # TU 1: tail-branch target new in the update
+0x83D9FB44 = {}  # TU 1: tail-branch target new in the update
+0x83D9FB38 = {}  # TU 1: tail-branch target new in the update
+0x83D9FB10 = {}  # TU 1: tail-branch target new in the update
+0x83D9FB04 = {}  # TU 1: tail-branch target new in the update
+0x83D9FAD0 = {}  # TU 1: tail-branch target new in the update
+0x83D9FAC4 = {}  # TU 1: tail-branch target new in the update
+0x83D9FA9C = {}  # TU 1: tail-branch target new in the update
+0x83D9FA90 = {}  # TU 1: tail-branch target new in the update
+0x83D9FA50 = {}  # TU 1: tail-branch target new in the update
+0x83D941B8 = {}  # TU 1: tail-branch target new in the update
+0x83D941B4 = {}  # TU 1: tail-branch target new in the update
+0x83D941A8 = {}  # TU 1: tail-branch target new in the update
+0x83D9419C = {}  # TU 1: tail-branch target new in the update
+0x83D94190 = {}  # TU 1: tail-branch target new in the update
+0x83D94184 = {}  # TU 1: tail-branch target new in the update
+0x83D94178 = {}  # TU 1: tail-branch target new in the update
+0x83D9416C = {}  # TU 1: tail-branch target new in the update
+0x83D94160 = {}  # TU 1: tail-branch target new in the update
+0x83D93130 = {}  # TU 1: tail-branch target new in the update
+0x83D93110 = {}  # TU 1: tail-branch target new in the update
+0x83D8F238 = {}  # TU 1: tail-branch target new in the update
+0x83D8F234 = {}  # TU 1: tail-branch target new in the update
+0x83D8F228 = {}  # TU 1: tail-branch target new in the update
+0x83D8F21C = {}  # TU 1: tail-branch target new in the update
+0x83D8D500 = {}  # TU 1: tail-branch target new in the update
+0x83D8D4FC = {}  # TU 1: tail-branch target new in the update
+0x83D8D4F0 = {}  # TU 1: tail-branch target new in the update
+0x83D8D4E4 = {}  # TU 1: tail-branch target new in the update
+0x83D8D4D8 = {}  # TU 1: tail-branch target new in the update
+0x83D8D4CC = {}  # TU 1: tail-branch target new in the update
+0x83D8D4C0 = {}  # TU 1: tail-branch target new in the update
+0x83D81A08 = {}  # TU 1: tail-branch target new in the update
+0x83D81978 = {}  # TU 1: tail-branch target new in the update
+0x83D81968 = {}  # TU 1: tail-branch target new in the update
+0x83D81958 = {}  # TU 1: tail-branch target new in the update
+0x83D81918 = {}  # TU 1: tail-branch target new in the update
+0x83D81908 = {}  # TU 1: tail-branch target new in the update
+0x83D7F558 = {}  # TU 1: tail-branch target new in the update
+0x83D7F54C = {}  # TU 1: tail-branch target new in the update
+0x83D7F540 = {}  # TU 1: tail-branch target new in the update
+0x83D7F534 = {}  # TU 1: tail-branch target new in the update
+0x83D7F528 = {}  # TU 1: tail-branch target new in the update
+0x83D7F51C = {}  # TU 1: tail-branch target new in the update
+0x83D7F510 = {}  # TU 1: tail-branch target new in the update
+0x83D7F504 = {}  # TU 1: tail-branch target new in the update
+0x83D7EF88 = {}  # TU 1: tail-branch target new in the update
+0x83D7EF7C = {}  # TU 1: tail-branch target new in the update
+0x83D7EF70 = {}  # TU 1: tail-branch target new in the update
+0x83D7EF64 = {}  # TU 1: tail-branch target new in the update
+0x83D7EF58 = {}  # TU 1: tail-branch target new in the update
+0x83D7EF4C = {}  # TU 1: tail-branch target new in the update
+0x83D7EF40 = {}  # TU 1: tail-branch target new in the update
+0x83D7EF34 = {}  # TU 1: tail-branch target new in the update
+0x83D7EF28 = {}  # TU 1: tail-branch target new in the update
+0x83D7EF1C = {}  # TU 1: tail-branch target new in the update
+0x83D7EF10 = {}  # TU 1: tail-branch target new in the update
+0x83D7EF04 = {}  # TU 1: tail-branch target new in the update
+0x83D7EEF8 = {}  # TU 1: tail-branch target new in the update
+0x83D7ED60 = {}  # TU 1: tail-branch target new in the update
+0x83D7ED54 = {}  # TU 1: tail-branch target new in the update
+0x83D7ED48 = {}  # TU 1: tail-branch target new in the update
+0x83D7ED3C = {}  # TU 1: tail-branch target new in the update
+0x83D7ED30 = {}  # TU 1: tail-branch target new in the update
+0x83D7ED24 = {}  # TU 1: tail-branch target new in the update
+0x83D7ED18 = {}  # TU 1: tail-branch target new in the update
+0x83D78CB0 = {}  # TU 1: tail-branch target new in the update
+0x83D78CAC = {}  # TU 1: tail-branch target new in the update
+0x83D78CA0 = {}  # TU 1: tail-branch target new in the update
+0x83D78C94 = {}  # TU 1: tail-branch target new in the update
+0x83D78C64 = {}  # TU 1: tail-branch target new in the update
+0x83D78C58 = {}  # TU 1: tail-branch target new in the update
+0x83D78C4C = {}  # TU 1: tail-branch target new in the update
+0x83D78010 = {}  # TU 1: tail-branch target new in the update
+0x83D7800C = {}  # TU 1: tail-branch target new in the update
+0x83D78000 = {}  # TU 1: tail-branch target new in the update
+0x83D77FF4 = {}  # TU 1: tail-branch target new in the update
+0x83D77FE8 = {}  # TU 1: tail-branch target new in the update
+0x83D77FDC = {}  # TU 1: tail-branch target new in the update
+0x83D77FD0 = {}  # TU 1: tail-branch target new in the update
+0x83D77FC4 = {}  # TU 1: tail-branch target new in the update
+0x83D77FB8 = {}  # TU 1: tail-branch target new in the update
+0x83D77FAC = {}  # TU 1: tail-branch target new in the update
+0x83D77FA0 = {}  # TU 1: tail-branch target new in the update
+0x83D77F94 = {}  # TU 1: tail-branch target new in the update
+0x83D77F88 = {}  # TU 1: tail-branch target new in the update
+0x83D77F7C = {}  # TU 1: tail-branch target new in the update
+0x83D77F70 = {}  # TU 1: tail-branch target new in the update
+0x83D77F64 = {}  # TU 1: tail-branch target new in the update
+0x83D77F58 = {}  # TU 1: tail-branch target new in the update
+0x83D77F4C = {}  # TU 1: tail-branch target new in the update
+0x83D77F40 = {}  # TU 1: tail-branch target new in the update
+0x83D77F34 = {}  # TU 1: tail-branch target new in the update
+0x83D77F28 = {}  # TU 1: tail-branch target new in the update
+0x83D77F1C = {}  # TU 1: tail-branch target new in the update
+0x83D77F10 = {}  # TU 1: tail-branch target new in the update
+0x83D77F04 = {}  # TU 1: tail-branch target new in the update
+0x83D77EF8 = {}  # TU 1: tail-branch target new in the update
+0x83D77EEC = {}  # TU 1: tail-branch target new in the update
+0x83D77EE0 = {}  # TU 1: tail-branch target new in the update
+0x83D77ED4 = {}  # TU 1: tail-branch target new in the update
+0x83D77EC8 = {}  # TU 1: tail-branch target new in the update
+0x83D77EBC = {}  # TU 1: tail-branch target new in the update
+0x83D77EB0 = {}  # TU 1: tail-branch target new in the update
+0x83D77EA4 = {}  # TU 1: tail-branch target new in the update
+0x83D77E98 = {}  # TU 1: tail-branch target new in the update
+0x83D77E8C = {}  # TU 1: tail-branch target new in the update
+0x83D77E80 = {}  # TU 1: tail-branch target new in the update
+0x83D77E74 = {}  # TU 1: tail-branch target new in the update
+0x83D77E68 = {}  # TU 1: tail-branch target new in the update
+0x83D77E5C = {}  # TU 1: tail-branch target new in the update
+0x83D77E50 = {}  # TU 1: tail-branch target new in the update
+0x83D77E44 = {}  # TU 1: tail-branch target new in the update
+0x83D77E38 = {}  # TU 1: tail-branch target new in the update
+0x83D77E2C = {}  # TU 1: tail-branch target new in the update
+0x83D77E20 = {}  # TU 1: tail-branch target new in the update
+0x83D77E14 = {}  # TU 1: tail-branch target new in the update
+0x83D77E08 = {}  # TU 1: tail-branch target new in the update
+0x83D77DFC = {}  # TU 1: tail-branch target new in the update
+0x83D77DF0 = {}  # TU 1: tail-branch target new in the update
+0x83D65468 = {}  # TU 1: tail-branch target new in the update
+0x83D557E8 = {}  # TU 1: tail-branch target new in the update
+0x83D549E0 = {}  # TU 1: tail-branch target new in the update
+0x83D31EB8 = {}  # TU 1: tail-branch target new in the update
+0x83D2C7C0 = {}  # TU 1: tail-branch target new in the update
+0x83CE0698 = {}  # TU 1: tail-branch target new in the update
+0x83CDE368 = {}  # TU 1: tail-branch target new in the update
+0x83CA8A30 = {}  # TU 1: tail-branch target new in the update
+0x83CA70F8 = {}  # TU 1: tail-branch target new in the update
+0x83CA6C08 = {}  # TU 1: tail-branch target new in the update
+0x83C99590 = {}  # TU 1: tail-branch target new in the update
+0x83C92E38 = {}  # TU 1: tail-branch target new in the update
+0x83C92E20 = {}  # TU 1: tail-branch target new in the update
+0x83C8DAD8 = {}  # TU 1: tail-branch target new in the update
+0x83B9F570 = {}  # TU 1: tail-branch target new in the update
+0x83B9F0EC = {}  # TU 1: tail-branch target new in the update
+0x83B9EC40 = {}  # TU 1: tail-branch target new in the update
+0x83B8CB50 = {}  # TU 1: tail-branch target new in the update
+0x83B892E8 = {}  # TU 1: tail-branch target new in the update
+0x83B85998 = {}  # TU 1: tail-branch target new in the update
+0x83B7C218 = {}  # TU 1: tail-branch target new in the update
+0x83B7C110 = {}  # TU 1: tail-branch target new in the update
+0x83B7C00C = {}  # TU 1: tail-branch target new in the update
+0x83B77D34 = {}  # TU 1: tail-branch target new in the update
+0x83B60A00 = {}  # TU 1: tail-branch target new in the update
+0x83B50D70 = {}  # TU 1: tail-branch target new in the update
+0x83B399E8 = {}  # TU 1: tail-branch target new in the update
+0x83AF56C4 = {}  # TU 1: tail-branch target new in the update
+0x83AF56B8 = {}  # TU 1: tail-branch target new in the update
+0x83AF56AC = {}  # TU 1: tail-branch target new in the update
+0x83AF56A0 = {}  # TU 1: tail-branch target new in the update
+0x83AF5694 = {}  # TU 1: tail-branch target new in the update
+0x83AF5688 = {}  # TU 1: tail-branch target new in the update
+0x83AF567C = {}  # TU 1: tail-branch target new in the update
+0x83AF5670 = {}  # TU 1: tail-branch target new in the update
+0x83AF5664 = {}  # TU 1: tail-branch target new in the update
+0x83AF5658 = {}  # TU 1: tail-branch target new in the update
+0x83AF12A4 = {}  # TU 1: tail-branch target new in the update
+0x83AB8050 = {}  # TU 1: tail-branch target new in the update
+0x83AB7430 = {}  # TU 1: tail-branch target new in the update
+0x83AAA700 = {}  # TU 1: tail-branch target new in the update
+0x83AAA194 = {}  # TU 1: tail-branch target new in the update
+0x83A8FCB4 = {}  # TU 1: tail-branch target new in the update
+0x83A3105C = {}  # TU 1: tail-branch target new in the update
+0x83A31050 = {}  # TU 1: tail-branch target new in the update
+0x83A31044 = {}  # TU 1: tail-branch target new in the update
+0x83A31038 = {}  # TU 1: tail-branch target new in the update
+0x83A3102C = {}  # TU 1: tail-branch target new in the update
+0x83A31020 = {}  # TU 1: tail-branch target new in the update
+0x83A31014 = {}  # TU 1: tail-branch target new in the update
+0x83A31008 = {}  # TU 1: tail-branch target new in the update
+0x83A30FFC = {}  # TU 1: tail-branch target new in the update
+0x83A30FF0 = {}  # TU 1: tail-branch target new in the update
+0x83A30FE4 = {}  # TU 1: tail-branch target new in the update
+0x83A30FD8 = {}  # TU 1: tail-branch target new in the update
+0x83A30FCC = {}  # TU 1: tail-branch target new in the update
+0x83A30FC0 = {}  # TU 1: tail-branch target new in the update
+0x83A30FB4 = {}  # TU 1: tail-branch target new in the update
+0x83A30FA8 = {}  # TU 1: tail-branch target new in the update
+0x83A30F9C = {}  # TU 1: tail-branch target new in the update
+0x83A30F90 = {}  # TU 1: tail-branch target new in the update
+0x83A30F84 = {}  # TU 1: tail-branch target new in the update
+0x83A30F78 = {}  # TU 1: tail-branch target new in the update
+0x83A30F6C = {}  # TU 1: tail-branch target new in the update
+0x839DFA38 = {}  # TU 1: tail-branch target new in the update
+0x83974A30 = {}  # TU 1: tail-branch target new in the update
+0x83955648 = {}  # TU 1: tail-branch target new in the update
+0x838F9010 = {}  # TU 1: tail-branch target new in the update
+0x838B32D0 = {}  # TU 1: tail-branch target new in the update
+0x838B2C88 = {}  # TU 1: tail-branch target new in the update
+0x8389A8E4 = {}  # TU 1: tail-branch target new in the update
+0x8387E4E0 = {}  # TU 1: tail-branch target new in the update
+0x8387A9F8 = {}  # TU 1: tail-branch target new in the update
+0x8387A1DC = {}  # TU 1: tail-branch target new in the update
+0x838792BC = {}  # TU 1: tail-branch target new in the update
+0x83877D7C = {}  # TU 1: tail-branch target new in the update
+0x838771E4 = {}  # TU 1: tail-branch target new in the update
+0x83865108 = {}  # TU 1: tail-branch target new in the update
+0x83864710 = {}  # TU 1: tail-branch target new in the update
+0x83863DD8 = {}  # TU 1: tail-branch target new in the update
+0x8386149C = {}  # TU 1: tail-branch target new in the update
+0x838610B8 = {}  # TU 1: tail-branch target new in the update
+0x83860704 = {}  # TU 1: tail-branch target new in the update
+0x838604F8 = {}  # TU 1: tail-branch target new in the update
+0x838601B8 = {}  # TU 1: tail-branch target new in the update
+0x8385FE70 = {}  # TU 1: tail-branch target new in the update
+0x8385FA68 = {}  # TU 1: tail-branch target new in the update
+0x8385F408 = {}  # TU 1: tail-branch target new in the update
+0x8385ED28 = {}  # TU 1: tail-branch target new in the update
+0x8385E7D0 = {}  # TU 1: tail-branch target new in the update
+0x8385E410 = {}  # TU 1: tail-branch target new in the update
+0x8385E0D8 = {}  # TU 1: tail-branch target new in the update
+0x8385D91C = {}  # TU 1: tail-branch target new in the update
+0x8385CC6C = {}  # TU 1: tail-branch target new in the update
+0x8385C888 = {}  # TU 1: tail-branch target new in the update
+0x8385BEF4 = {}  # TU 1: tail-branch target new in the update
+0x8385BCE8 = {}  # TU 1: tail-branch target new in the update
+0x8385B9B0 = {}  # TU 1: tail-branch target new in the update
+0x8385B670 = {}  # TU 1: tail-branch target new in the update
+0x8385B268 = {}  # TU 1: tail-branch target new in the update
+0x8385AC10 = {}  # TU 1: tail-branch target new in the update
+0x8385A530 = {}  # TU 1: tail-branch target new in the update
+0x83859FE0 = {}  # TU 1: tail-branch target new in the update
+0x83859C28 = {}  # TU 1: tail-branch target new in the update
+0x838598F0 = {}  # TU 1: tail-branch target new in the update
+0x8385913C = {}  # TU 1: tail-branch target new in the update
+0x83857C3C = {}  # TU 1: tail-branch target new in the update
+0x83848B78 = {}  # TU 1: tail-branch target new in the update
+0x83848B6C = {}  # TU 1: tail-branch target new in the update
+0x83848B60 = {}  # TU 1: tail-branch target new in the update
+0x83848B54 = {}  # TU 1: tail-branch target new in the update
+0x83848B48 = {}  # TU 1: tail-branch target new in the update
+0x83848B3C = {}  # TU 1: tail-branch target new in the update
+0x83848B30 = {}  # TU 1: tail-branch target new in the update
+0x83848B24 = {}  # TU 1: tail-branch target new in the update
+0x83848B18 = {}  # TU 1: tail-branch target new in the update
+0x83848B0C = {}  # TU 1: tail-branch target new in the update
+0x838391DC = {}  # TU 1: tail-branch target new in the update
+0x8380DFF8 = {}  # TU 1: tail-branch target new in the update
+0x837F0AA4 = {}  # TU 1: tail-branch target new in the update
+0x837D52B8 = {}  # TU 1: tail-branch target new in the update
+0x837B6F5C = {}  # TU 1: tail-branch target new in the update
+0x8378C74C = {}  # TU 1: tail-branch target new in the update
+0x8373BC4C = {}  # TU 1: tail-branch target new in the update
+0x8373BC40 = {}  # TU 1: tail-branch target new in the update
+0x8373BC34 = {}  # TU 1: tail-branch target new in the update
+0x8373A68C = {}  # TU 1: tail-branch target new in the update
+0x8370D8DC = {}  # TU 1: tail-branch target new in the update
+0x8370D8AC = {}  # TU 1: tail-branch target new in the update
+0x836F247C = {}  # TU 1: tail-branch target new in the update
+0x836F2470 = {}  # TU 1: tail-branch target new in the update
+0x836F2464 = {}  # TU 1: tail-branch target new in the update
+0x836DE330 = {}  # TU 1: tail-branch target new in the update
+0x836DE32C = {}  # TU 1: tail-branch target new in the update
+0x836DE320 = {}  # TU 1: tail-branch target new in the update
+0x836DE314 = {}  # TU 1: tail-branch target new in the update
+0x836DE308 = {}  # TU 1: tail-branch target new in the update
+0x836DE2FC = {}  # TU 1: tail-branch target new in the update
+0x836DE2F0 = {}  # TU 1: tail-branch target new in the update
+0x836DE2E4 = {}  # TU 1: tail-branch target new in the update
+0x836DE2D8 = {}  # TU 1: tail-branch target new in the update
+0x836DE2CC = {}  # TU 1: tail-branch target new in the update
+0x836DE2C0 = {}  # TU 1: tail-branch target new in the update
+0x836DE2B4 = {}  # TU 1: tail-branch target new in the update
+0x836DE2A8 = {}  # TU 1: tail-branch target new in the update
+0x836DE29C = {}  # TU 1: tail-branch target new in the update
+0x836DE290 = {}  # TU 1: tail-branch target new in the update
+0x836DE284 = {}  # TU 1: tail-branch target new in the update
+0x836DE278 = {}  # TU 1: tail-branch target new in the update
+0x836DE26C = {}  # TU 1: tail-branch target new in the update
+0x836DE260 = {}  # TU 1: tail-branch target new in the update
+0x836DE254 = {}  # TU 1: tail-branch target new in the update
+0x836DE248 = {}  # TU 1: tail-branch target new in the update
+0x836DE23C = {}  # TU 1: tail-branch target new in the update
+0x836DE230 = {}  # TU 1: tail-branch target new in the update
+0x836DE224 = {}  # TU 1: tail-branch target new in the update
+0x836DE218 = {}  # TU 1: tail-branch target new in the update
+0x836DE20C = {}  # TU 1: tail-branch target new in the update
+0x836CF674 = {}  # TU 1: tail-branch target new in the update
+0x836BD704 = {}  # TU 1: tail-branch target new in the update
+0x836BA4AC = {}  # TU 1: tail-branch target new in the update
+0x836B7864 = {}  # TU 1: tail-branch target new in the update
+0x8369981C = {}  # TU 1: tail-branch target new in the update
+0x836975E0 = {}  # TU 1: tail-branch target new in the update
+0x836958AC = {}  # TU 1: tail-branch target new in the update
+0x8368EC64 = {}  # TU 1: tail-branch target new in the update
+0x8368EC48 = {}  # TU 1: tail-branch target new in the update
+0x83682430 = {}  # TU 1: tail-branch target new in the update
+0x83649314 = {}  # TU 1: tail-branch target new in the update
+0x83648474 = {}  # TU 1: tail-branch target new in the update
+0x836227DC = {}  # TU 1: tail-branch target new in the update
+0x8362278C = {}  # TU 1: tail-branch target new in the update
+0x8362269C = {}  # TU 1: tail-branch target new in the update
+0x836025C8 = {}  # TU 1: tail-branch target new in the update
+0x835EBAE8 = {}  # TU 1: tail-branch target new in the update
+0x835E74F0 = {}  # TU 1: tail-branch target new in the update
+0x835E73A8 = {}  # TU 1: tail-branch target new in the update
+0x835E4F24 = {}  # TU 1: tail-branch target new in the update
+0x835E36F4 = {}  # TU 1: tail-branch target new in the update
+0x835DAB40 = {}  # TU 1: tail-branch target new in the update
+0x8354EDA0 = {}  # TU 1: tail-branch target new in the update
+0x8354E4B4 = {}  # TU 1: tail-branch target new in the update
+0x83542458 = {}  # TU 1: tail-branch target new in the update
+0x83528238 = {}  # TU 1: tail-branch target new in the update
+0x83511378 = {}  # TU 1: tail-branch target new in the update
+0x83503D08 = {}  # TU 1: tail-branch target new in the update
+0x834FE4A8 = {}  # TU 1: tail-branch target new in the update
+0x834CD298 = {}  # TU 1: tail-branch target new in the update
+0x834B6F3C = {}  # TU 1: tail-branch target new in the update
+0x83480C30 = {}  # TU 1: tail-branch target new in the update
+0x8347A45C = {}  # TU 1: tail-branch target new in the update
+0x8346B660 = {}  # TU 1: tail-branch target new in the update
+0x834582C8 = {}  # TU 1: tail-branch target new in the update
+0x83452B98 = {}  # TU 1: tail-branch target new in the update
+0x83423520 = {}  # TU 1: tail-branch target new in the update
+0x83414FD8 = {}  # TU 1: tail-branch target new in the update
+0x833DF858 = {}  # TU 1: tail-branch target new in the update
+0x833C6F64 = {}  # TU 1: tail-branch target new in the update
+0x8339EAE8 = {}  # TU 1: tail-branch target new in the update
+0x8339E978 = {}  # TU 1: tail-branch target new in the update
+0x8339E878 = {}  # TU 1: tail-branch target new in the update
+0x8339D890 = {}  # TU 1: tail-branch target new in the update
+0x83399C88 = {}  # TU 1: tail-branch target new in the update
+0x833956C0 = {}  # TU 1: tail-branch target new in the update
+0x8338EC40 = {}  # TU 1: tail-branch target new in the update
+0x8338CB00 = {}  # TU 1: tail-branch target new in the update
+0x8338C808 = {}  # TU 1: tail-branch target new in the update
+0x8338C7CC = {}  # TU 1: tail-branch target new in the update
+0x8337B7B0 = {}  # TU 1: tail-branch target new in the update
+0x8337B7A8 = {}  # TU 1: tail-branch target new in the update
+0x83361B08 = {}  # TU 1: tail-branch target new in the update
+0x832ED658 = {}  # TU 1: tail-branch target new in the update
+0x832DE304 = {}  # TU 1: tail-branch target new in the update
+0x832C2D88 = {}  # TU 1: tail-branch target new in the update
+0x832AEB00 = {}  # TU 1: tail-branch target new in the update
+0x832AEAE8 = {}  # TU 1: tail-branch target new in the update
+0x832ADEF4 = {}  # TU 1: tail-branch target new in the update
+0x832A0320 = {}  # TU 1: tail-branch target new in the update
+0x8328C718 = {}  # TU 1: tail-branch target new in the update
+0x83270480 = {}  # TU 1: tail-branch target new in the update
+0x83270478 = {}  # TU 1: tail-branch target new in the update
+0x83270474 = {}  # TU 1: tail-branch target new in the update
+0x83270468 = {}  # TU 1: tail-branch target new in the update
+0x8327045C = {}  # TU 1: tail-branch target new in the update
+0x83270450 = {}  # TU 1: tail-branch target new in the update
+0x83270444 = {}  # TU 1: tail-branch target new in the update
+0x83270438 = {}  # TU 1: tail-branch target new in the update
+0x8327042C = {}  # TU 1: tail-branch target new in the update
+0x83270420 = {}  # TU 1: tail-branch target new in the update
+0x83270414 = {}  # TU 1: tail-branch target new in the update
+0x83270408 = {}  # TU 1: tail-branch target new in the update
+0x832703FC = {}  # TU 1: tail-branch target new in the update
+0x832703F0 = {}  # TU 1: tail-branch target new in the update
+0x832703E4 = {}  # TU 1: tail-branch target new in the update
+0x832703D8 = {}  # TU 1: tail-branch target new in the update
+0x832703CC = {}  # TU 1: tail-branch target new in the update
+0x832703C0 = {}  # TU 1: tail-branch target new in the update
+0x832703B4 = {}  # TU 1: tail-branch target new in the update
+0x832703A8 = {}  # TU 1: tail-branch target new in the update
+0x8327039C = {}  # TU 1: tail-branch target new in the update
+0x83270390 = {}  # TU 1: tail-branch target new in the update
+0x83270384 = {}  # TU 1: tail-branch target new in the update
+0x83270378 = {}  # TU 1: tail-branch target new in the update
+0x8327036C = {}  # TU 1: tail-branch target new in the update
+0x83270360 = {}  # TU 1: tail-branch target new in the update
+0x83270354 = {}  # TU 1: tail-branch target new in the update
+0x83270348 = {}  # TU 1: tail-branch target new in the update
+0x8327033C = {}  # TU 1: tail-branch target new in the update
+0x83270330 = {}  # TU 1: tail-branch target new in the update
+0x83270324 = {}  # TU 1: tail-branch target new in the update
+0x83270318 = {}  # TU 1: tail-branch target new in the update
+0x8327030C = {}  # TU 1: tail-branch target new in the update
+0x83270300 = {}  # TU 1: tail-branch target new in the update
+0x832702F4 = {}  # TU 1: tail-branch target new in the update
+0x832702E8 = {}  # TU 1: tail-branch target new in the update
+0x832702DC = {}  # TU 1: tail-branch target new in the update
+0x832702D0 = {}  # TU 1: tail-branch target new in the update
+0x832702C4 = {}  # TU 1: tail-branch target new in the update
+0x832702B8 = {}  # TU 1: tail-branch target new in the update
+0x832702AC = {}  # TU 1: tail-branch target new in the update
+0x832702A0 = {}  # TU 1: tail-branch target new in the update
+0x83270294 = {}  # TU 1: tail-branch target new in the update
+0x83270288 = {}  # TU 1: tail-branch target new in the update
+0x8327027C = {}  # TU 1: tail-branch target new in the update
+0x83270270 = {}  # TU 1: tail-branch target new in the update
+0x83270264 = {}  # TU 1: tail-branch target new in the update
+0x83270258 = {}  # TU 1: tail-branch target new in the update
+0x8326FDE8 = {}  # TU 1: tail-branch target new in the update
+0x8326FDE4 = {}  # TU 1: tail-branch target new in the update
+0x8326FDD8 = {}  # TU 1: tail-branch target new in the update
+0x8326FDCC = {}  # TU 1: tail-branch target new in the update
+0x8326FDC4 = {}  # TU 1: tail-branch target new in the update
+0x8324C238 = {}  # TU 1: tail-branch target new in the update
+0x83228E9C = {}  # TU 1: tail-branch target new in the update
+0x83228E90 = {}  # TU 1: tail-branch target new in the update
+0x83228E84 = {}  # TU 1: tail-branch target new in the update
+0x83228E78 = {}  # TU 1: tail-branch target new in the update
+0x83228E6C = {}  # TU 1: tail-branch target new in the update
+0x83228E60 = {}  # TU 1: tail-branch target new in the update
+0x83228E54 = {}  # TU 1: tail-branch target new in the update
+0x83228E48 = {}  # TU 1: tail-branch target new in the update
+0x83228E3C = {}  # TU 1: tail-branch target new in the update
+0x83228E30 = {}  # TU 1: tail-branch target new in the update
+0x83228E24 = {}  # TU 1: tail-branch target new in the update
+0x83228E18 = {}  # TU 1: tail-branch target new in the update
+0x831EE860 = {}  # TU 1: tail-branch target new in the update
+0x8319A9B0 = {}  # TU 1: tail-branch target new in the update
+0x83181148 = {}  # TU 1: tail-branch target new in the update
+0x83180DD8 = {}  # TU 1: tail-branch target new in the update
+0x8315F750 = {}  # TU 1: tail-branch target new in the update
+0x830B533C = {}  # TU 1: tail-branch target new in the update
+0x8309A4B8 = {}  # TU 1: tail-branch target new in the update
+0x8309A4A4 = {}  # TU 1: tail-branch target new in the update
+0x8309A498 = {}  # TU 1: tail-branch target new in the update
+0x8309A48C = {}  # TU 1: tail-branch target new in the update
+0x83071A08 = {}  # TU 1: tail-branch target new in the update
+0x8304B31C = {}  # TU 1: tail-branch target new in the update
+0x8304B318 = {}  # TU 1: tail-branch target new in the update
+0x83032560 = {}  # TU 1: tail-branch target new in the update
+0x83032548 = {}  # TU 1: tail-branch target new in the update
+0x8301D61C = {}  # TU 1: tail-branch target new in the update
+0x82FCE6F8 = {}  # TU 1: tail-branch target new in the update
+0x82FBFF40 = {}  # TU 1: tail-branch target new in the update
+0x82F849F8 = {}  # TU 1: tail-branch target new in the update
+0x82F849EC = {}  # TU 1: tail-branch target new in the update
+0x82F75678 = {}  # TU 1: tail-branch target new in the update
+0x82F3F508 = {}  # TU 1: tail-branch target new in the update
+0x82F3F460 = {}  # TU 1: tail-branch target new in the update
+0x82F24570 = {}  # TU 1: tail-branch target new in the update
+0x82ED1630 = {}  # TU 1: tail-branch target new in the update
+0x82EA2684 = {}  # TU 1: tail-branch target new in the update
+0x82E7ABB8 = {}  # TU 1: tail-branch target new in the update
+0x82E70318 = {}  # TU 1: tail-branch target new in the update
+0x82E3FBF8 = {}  # TU 1: tail-branch target new in the update
+0x82E2CF50 = {}  # TU 1: tail-branch target new in the update
+0x82E2CF30 = {}  # TU 1: tail-branch target new in the update
+0x82E2CF20 = {}  # TU 1: tail-branch target new in the update
+0x82E2CF10 = {}  # TU 1: tail-branch target new in the update
+0x82E2C008 = {}  # TU 1: tail-branch target new in the update
+0x82E21968 = {}  # TU 1: tail-branch target new in the update
+0x82E07144 = {}  # TU 1: tail-branch target new in the update
+0x82DE0610 = {}  # TU 1: tail-branch target new in the update
+0x82DDD03C = {}  # TU 1: tail-branch target new in the update
+0x82DDD02C = {}  # TU 1: tail-branch target new in the update
+0x82DDD024 = {}  # TU 1: tail-branch target new in the update
+0x82DDCC58 = {}  # TU 1: tail-branch target new in the update
+0x82DDA778 = {}  # TU 1: tail-branch target new in the update
+0x82DDA770 = {}  # TU 1: tail-branch target new in the update
+0x82DDA76C = {}  # TU 1: tail-branch target new in the update
+0x82DDA760 = {}  # TU 1: tail-branch target new in the update
+0x82DDA754 = {}  # TU 1: tail-branch target new in the update
+0x82DD3150 = {}  # TU 1: tail-branch target new in the update
+0x82DC59DC = {}  # TU 1: tail-branch target new in the update
+0x82DAC690 = {}  # TU 1: tail-branch target new in the update
+0x82DAAB94 = {}  # TU 1: tail-branch target new in the update
+0x82D95320 = {}  # TU 1: tail-branch target new in the update
+0x82D951C8 = {}  # TU 1: tail-branch target new in the update
+0x82D951C0 = {}  # TU 1: tail-branch target new in the update
+0x82D950A0 = {}  # TU 1: tail-branch target new in the update
+0x82D94F4C = {}  # TU 1: tail-branch target new in the update
+0x82D94F38 = {}  # TU 1: tail-branch target new in the update
+0x82D94E20 = {}  # TU 1: tail-branch target new in the update
+0x82D73A64 = {}  # TU 1: tail-branch target new in the update
+0x82D701E8 = {}  # TU 1: tail-branch target new in the update
+0x82D5FFB8 = {}  # TU 1: tail-branch target new in the update
+0x82D5CEE8 = {}  # TU 1: tail-branch target new in the update
+0x82D5C220 = {}  # TU 1: tail-branch target new in the update
+0x82D5BC98 = {}  # TU 1: tail-branch target new in the update
+0x82D5B4B0 = {}  # TU 1: tail-branch target new in the update
+0x82D5AF10 = {}  # TU 1: tail-branch target new in the update
+0x82D58AF0 = {}  # TU 1: tail-branch target new in the update
+0x82D12914 = {}  # TU 1: tail-branch target new in the update
+0x82D1272C = {}  # TU 1: tail-branch target new in the update
+0x82D04DE8 = {}  # TU 1: tail-branch target new in the update
+0x82CF9278 = {}  # TU 1: tail-branch target new in the update
+0x82CDA3F0 = {}  # TU 1: tail-branch target new in the update
+0x8351D798 = {}  # TU 1: tail-branch target new in the update
+0x8363CAD0 = {}
+0x83C98970 = {}
+0x82E3DCE0 = {}
+0x838CAEA8 = {}
+0x83072758 = {}
+0x8315DD90 = {}
+# sub_83A4B7A0 branches into the middle of sub_83A4B680 (a shared tail at 0x83A4B718): split it.
+0x83A4CD20 = { size = 0x98 }
+0x83A4CDB8 = { size = 0x88 }
+0x82CD4C20 = {}
+0x82CD4C48 = {}
+0x82CD4C60 = {}
+0x82CD4C78 = {}
+# 0x82CE0D30 = {}  # base-only: no verified match in TU 1
+# 0x82CE0D40 = {}  # base-only: no verified match in TU 1
+# 0x82CE0D50 = {}  # base-only: no verified match in TU 1
+0x82CE0B48 = {}
+0x82CE0B58 = {}
+0x82CF8758 = {}
+0x82CFC5B0 = {}
+0x82D0001C = {}
+0x82D0D7DC = {}
+0x82D101F0 = {}
+0x82D2AE7C = {}
+0x82D2E294 = {}
+0x82D30C68 = {}
+0x82D3F340 = {}
+0x82D3F5E4 = {}
+0x82D3FBD8 = {}
+0x82D41238 = {}
+0x82D43BA8 = {}
+0x82D68E1C = {}
+0x82D68E58 = {}
+0x82D6F0DC = {}
+0x82D7AB08 = {}
+0x82D7ABA8 = {}
+0x82D7B890 = {}
+0x82D7B8B0 = {}
+0x82D7B8D8 = {}
+0x82D82040 = {}
+0x82D82048 = {}
+0x82D82058 = {}
+0x82D82060 = {}
+0x82D82068 = {}
+0x82D82070 = {}
+0x82D82078 = {}
+0x82D82080 = {}
+0x82D82088 = {}
+0x82D82090 = {}
+0x82D82098 = {}
+0x82D820A0 = {}
+0x82D820A8 = {}
+0x82D820B0 = {}
+0x82D820C8 = {}
+0x82D945A8 = {}
+# 0x82D94458 = {}  # base-only: no verified match in TU 1
+0x82D946C0 = {}
+# 0x82D94BB0 = {}  # base-only: no verified match in TU 1
+0x82D94E40 = {}
+0x82D94EF8 = {}
+# 0x82D94D58 = {}  # base-only: no verified match in TU 1
+0x82D95080 = {}
+0x82D94FF0 = {}
+0x82D950C0 = {}
+0x82D95188 = {}
+0x82D95270 = {}
+0x82DC57B0 = {}
+0x82DC5818 = {}
+# 0x82DC52DC = {}  # base-only: no verified match in TU 1
+0x82DC5D6C = {}
+# 0x82DD3508 = {}  # base-only: no verified match in TU 1
+0x82DDBC60 = {}
+# 0x82DF5950 = {}  # base-only: no verified match in TU 1
+0x82DF55B0 = {}
+0x82DFA37C = {}
+0x82DFA3C8 = {}
+0x82DFC74C = {}
+0x82DFD480 = {}
+0x82DFD4B4 = {}
+0x82E0710C = {}
+# 0x82E077B4 = {}  # base-only: no verified match in TU 1
+0x82E0743C = {}
+0x82E0F81C = {}
+0x82E0FA8C = {}
+0x82E0FABC = {}
+0x82E1E878 = {}
+0x82E1E8B8 = {}
+# 0x82E21C00 = {}  # base-only: no verified match in TU 1
+0x82E2C140 = {}
+0x82E31B28 = {}
+0x82E49FA8 = {}
+0x82E4B89C = {}
+0x82E4BA20 = {}
+0x82E50654 = {}
+0x82E5153C = {}
+0x82E51F50 = {}
+0x82EB8994 = {}
+0x82ED6CA0 = {}
+# 0x82ED6FE0 = {}  # base-only: no verified match in TU 1
+0x82EE59C0 = {}
+0x82EE59D8 = {}
+0x82EECE40 = {}
+0x82EFA890 = {}
+0x82F052F8 = {}
+0x82F14D44 = {}
+0x82F14F08 = {}
+0x82F151C4 = {}
+0x82F16DE4 = {}
+0x82F17550 = {}
+0x82F18DD8 = {}
+0x82F18E5C = {}
+0x82F24DFC = {}
+0x82F24F60 = {}
+0x82F2AC9C = {}
+0x82F2B08C = {}
+0x82F2C4F0 = {}
+0x82F2CA50 = {}
+0x82F2CB94 = {}
+0x82F2CBB8 = {}
+0x82F2CCB4 = {}
+# 0x82F3F0B0 = {}  # base-only: no verified match in TU 1
+# 0x82F3F158 = {}  # base-only: no verified match in TU 1
+0x82F753B0 = {}
+0x82F757D8 = {}
+0x82F75E70 = {}
+0x82F75E88 = {}
+0x82F77BCC = {}
+0x82F83984 = {}
+0x82F84588 = {}
+0x82F94D7C = {}
+0x82F94D94 = {}
+0x82F94DAC = {}
+0x82F94DC4 = {}
+0x82F94DDC = {}
+0x82F95BE0 = {}
+0x82F9CDB8 = {}
+0x82FAB8EC = {}
+0x82FBE8D8 = {}
+# 0x82FCE480 = {}  # base-only: no verified match in TU 1
+0x82FCE778 = {}
+0x82FCE790 = {}
+0x82FCE7A0 = {}
+0x82FCE7B8 = {}
+0x82FCE7C0 = {}
+0x82FCE7C8 = {}
+0x82FD0690 = {}
+0x82FD4798 = {}
+0x82FE7728 = {}
+0x82FE7730 = {}
+0x82FE7EC0 = {}
+0x82FE7EC8 = {}
+0x82FE9100 = {}
+0x82FE9258 = {}
+0x82FE9C68 = {}
+0x82FE9C80 = {}
+0x82FEC4E8 = {}
+0x830091D0 = {}
+0x83009250 = {}
+# 0x8301D56C = {}  # base-only: no verified match in TU 1
+0x83032240 = {}
+# 0x83032568 = {}  # base-only: no verified match in TU 1
+0x830327B4 = {}
+0x83032E20 = {}
+0x83033044 = {}
+0x83033618 = {}
+0x8304A0C4 = {}
+0x8304A37C = {}
+0x8304A3AC = {}
+0x8304CC58 = {}
+0x8305EEAC = {}
+0x83061598 = {}
+0x83071A18 = {}
+0x830728E0 = {}
+0x83072A20 = {}
+0x83073078 = {}
+0x83073540 = {}
+0x83073820 = {}
+0x83074E3C = {}
+0x83075EB8 = {}
+0x83084CC8 = {}
+0x830850C8 = {}
+0x83085F90 = {}
+0x83085FC8 = {}
+0x830876F8 = {}
+0x83087730 = {}
+0x83087768 = {}
+0x8309C910 = {}
+0x8309C918 = {}
+0x8309C920 = {}
+0x830B4DC0 = {}
+0x830B4DE8 = {}
+0x830B4E10 = {}
+0x830B4E38 = {}
+0x830B5404 = {}
+0x830B5434 = {}
+0x830B5C40 = {}
+0x830B9378 = {}
+0x830D9DB0 = {}
+0x830D9E58 = {}
+# 0x830E6660 = {}  # base-only: no verified match in TU 1
+0x830E6E20 = {}
+0x830E70B8 = {}
+0x83100A10 = {}
+0x8310D158 = {}
+0x8310D2D0 = {}
+0x8310D2E0 = {}
+0x831200B8 = {}
+0x831295B0 = {}
+0x8314DEB4 = {}
+0x8314E0FC = {}
+0x8314E174 = {}
+0x831575F8 = {}
+0x83157638 = {}
+0x83157680 = {}
+0x83157688 = {}
+0x831576B0 = {}
+0x831576B8 = {}
+0x831576C0 = {}
+0x8315D0B8 = {}
+0x8315D8C8 = {}
+0x8315D8E0 = {}
+0x8315E9A8 = {}
+0x8316DB20 = {}
+0x8316F074 = {}
+0x8316F0BC = {}
+0x83180DE8 = {}
+0x83180E0C = {}
+# 0x83180198 = {}  # base-only: no verified match in TU 1
+0x8318119C = {}
+0x8318CDD4 = {}
+# 0x831ECAE8 = {}  # base-only: no verified match in TU 1
+0x832061F8 = {}
+0x8320DF24 = {}
+0x8320E0E0 = {}
+0x832291B0 = {}
+0x83240154 = {}
+0x83263ECC = {}
+0x83264FF8 = {}
+0x83265094 = {}
+0x83266D94 = {}
+0x832723D8 = {}
+# 0x832ACA44 = {}  # base-only: no verified match in TU 1
+# 0x832AD390 = {}  # base-only: no verified match in TU 1
+# 0x832C0CF0 = {}  # base-only: no verified match in TU 1
+0x832C30B4 = {}
+0x832DCF64 = {}
+0x832DD7D0 = {}
+# 0x832DC1DC = {}  # base-only: no verified match in TU 1
+0x832EBCBC = {}
+0x832EBCFC = {}
+0x832EBD3C = {}
+0x8330E130 = {}
+0x8330E150 = {}
+0x8330E174 = {}
+0x8330FFB0 = {}
+0x8333B8AC = {}
+0x83342218 = {}
+0x8335E564 = {}
+0x8335E704 = {}
+0x8335E894 = {}
+0x83368240 = {}
+0x83378DF0 = {}
+0x83378E1C = {}
+0x8337B4E8 = {}
+0x8337B500 = {}
+# 0x833790F0 = {}  # base-only: no verified match in TU 1
+0x833856F8 = {}
+0x83385778 = {}
+0x83385788 = {}
+0x8338B878 = {}
+0x833A0AF8 = {}
+0x833A0F90 = {}
+0x833B5674 = {}
+0x833B6C74 = {}
+0x833B96A8 = {}
+# 0x833C4C3C = {}  # base-only: no verified match in TU 1
+0x833C7AE0 = {}
+0x833E1568 = {}
+# 0x833FEA34 = {}  # base-only: no verified match in TU 1
+0x83417958 = {}
+# 0x83416B60 = {}  # base-only: no verified match in TU 1
+0x83419078 = {}
+0x8341B1BC = {}
+0x8341B348 = {}
+0x8341B6D8 = {}
+0x8341C21C = {}
+0x8342A384 = {}
+0x8343A480 = {}
+0x83449828 = {}
+0x834523FC = {}
+# 0x834511F0 = {}  # base-only: no verified match in TU 1
+0x83460620 = {}
+0x83460688 = {}
+0x83469340 = {}
+0x83484AE4 = {}
+0x834859B4 = {}
+0x83486CF0 = {}
+0x83488DA4 = {}
+0x8348AE78 = {}
+0x834B6BC4 = {}
+0x83504818 = {}
+# 0x83517110 = {}  # base-only: no verified match in TU 1
+# 0x83517D08 = {}  # base-only: no verified match in TU 1
+0x83547ADC = {}
+0x8356B984 = {}
+0x835790D8 = {}
+0x835791EC = {}
+0x8357925C = {}
+0x835FBA64 = {}
+0x8360A128 = {}
+0x8360B00C = {}
+0x836126F8 = {}
+0x836131D8 = {}
+0x8361D31C = {}
+0x8361D3EC = {}
+0x8361D404 = {}
+0x8361D4AC = {}
+0x8361D4C4 = {}
+0x83622334 = {}
+# 0x836212AC = {}  # base-only: no verified match in TU 1
+0x8362273C = {}
+0x83622764 = {}
+# 0x836213EC = {}  # base-only: no verified match in TU 1
+# 0x83621424 = {}  # base-only: no verified match in TU 1
+0x83627ADC = {}
+0x83633A84 = {}
+0x83634DC0 = {}
+0x8363745C = {}
+0x83642B94 = {}
+0x83642C1C = {}
+0x83642C34 = {}
+0x83643644 = {}
+0x83643678 = {}
+0x836436AC = {}
+0x8364396C = {}
+0x83645F74 = {}
+0x83647058 = {}
+0x83647088 = {}
+0x836470B4 = {}
+# 0x836480DC = {}  # base-only: no verified match in TU 1
+0x8364ACF8 = {}
+0x8364AFD4 = {}
+0x8364B48C = {}
+0x83650F34 = {}
+0x83658704 = {}
+0x83661870 = {}
+0x8366E79C = {}
+0x8366E7C4 = {}
+0x8366E9E4 = {}
+0x8366EA0C = {}
+0x83672D30 = {}
+0x83673018 = {}
+0x8367E884 = {}
+0x8367E954 = {}
+0x8367EC1C = {}
+0x8367EC64 = {}
+0x8367ED44 = {}
+0x8367F1D4 = {}
+0x8367F2B4 = {}
+0x8367F390 = {}
+0x8367F554 = {}
+0x8367F62C = {}
+0x8367F730 = {}
+0x8367F7CC = {}
+0x8367FC2C = {}
+0x8367FFF4 = {}
+0x836800DC = {}
+0x836801D4 = {}
+0x8368054C = {}
+0x83683484 = {}
+0x83683604 = {}
+0x83688EA4 = {}
+0x83688F00 = {}
+0x83688F6C = {}
+0x83688FCC = {}
+0x83689B78 = {}
+0x8368E9F4 = {}
+# 0x83691A84 = {}  # base-only: no verified match in TU 1
+0x836930A8 = {}
+0x83694A7C = {}
+0x83694D7C = {}
+0x8369549C = {}
+# 0x836948DC = {}  # base-only: no verified match in TU 1
+0x83699CC4 = {}
+0x8369A7C8 = {}
+0x8369CE8C = {}
+0x8369F0AC = {}
+0x8369F934 = {}
+0x836A04FC = {}
+0x836A0514 = {}
+0x836A0A94 = {}
+0x836A0AC4 = {}
+# 0x8369FAFC = {}  # base-only: no verified match in TU 1
+0x836A0AF4 = {}
+0x836B39B4 = {}
+0x836B39E4 = {}
+0x836B3A14 = {}
+0x836B3A44 = {}
+0x836B790C = {}
+0x836BA554 = {}
+0x836BAA10 = {}
+# 0x836BC224 = {}  # base-only: no verified match in TU 1
+0x836BFC00 = {}
+0x836C1D10 = {}
+0x836C1D34 = {}
+0x836C1D5C = {}
+0x836C1D84 = {}
+0x836C3C84 = {}
+0x836C8E54 = {}
+0x836C9F34 = {}
+0x836CA0A4 = {}
+0x836CF37C = {}
+# 0x836CE42C = {}  # base-only: no verified match in TU 1
+0x836D193C = {}
+0x836D19D4 = {}
+0x836D4A40 = {}
+0x836D7F0C = {}
+0x836D81F4 = {}
+0x836D82DC = {}
+0x836D8304 = {}
+0x836D835C = {}
+0x836DDB3C = {}
+0x836DDC14 = {}
+0x836DDE3C = {}
+0x836F225C = {}
+0x836F3AFC = {}
+0x836F3C7C = {}
+0x836F86C4 = {}
+0x836FBE1C = {}
+0x8370001C = {}
+0x837000B4 = {}
+# 0x8370C074 = {}  # base-only: no verified match in TU 1
+0x8370DB08 = {}
+0x8370DD2C = {}
+0x8370DD54 = {}
+0x8370DEFC = {}
+0x8370DF84 = {}
+0x8370E0F4 = {}
+0x83715444 = {}
+0x83715934 = {}
+0x8371A464 = {}
+0x8371A5EC = {}
+0x8371B774 = {}
+0x8371C704 = {}
+0x8371EF34 = {}
+0x8371F37C = {}
+0x83720EC4 = {}
+0x83729964 = {}
+0x83729B1C = {}
+0x83729B74 = {}
+0x83729BCC = {}
+0x83729C9C = {}
+0x83729E94 = {}
+0x83729EEC = {}
+0x83729F14 = {}
+0x83729F3C = {}
+0x8372A2EC = {}
+0x8372A47C = {}
+0x8372A51C = {}
+0x8372A584 = {}
+0x8372A8FC = {}
+0x8372A964 = {}
+0x8372B97C = {}
+0x8372BB24 = {}
+0x8372BC5C = {}
+0x8372BC74 = {}
+0x837317EC = {}
+0x83731824 = {}
+0x83736D64 = {}
+0x837378B4 = {}
+0x83738004 = {}
+0x83739324 = {}
+0x837394FC = {}
+0x837397A4 = {}
+0x8373A00C = {}
+0x8373A0FC = {}
+0x8373A3BC = {}
+# 0x83739174 = {}  # base-only: no verified match in TU 1
+0x8373AC18 = {}
+0x8373C8C4 = {}
+0x8373D164 = {}
+0x8373D5A4 = {}
+0x8373D924 = {}
+0x8373DC84 = {}
+0x8373DFAC = {}
+0x8373E16C = {}
+0x8374430C = {}
+0x83744334 = {}
+0x837445A4 = {}
+0x83744DFC = {}
+0x83749664 = {}
+0x8374A100 = {}
+0x8374B73C = {}
+0x8374BACC = {}
+0x8374BB94 = {}
+0x8374BF5C = {}
+0x8374C0AC = {}
+0x8374CE2C = {}
+# 0x83759718 = {}  # base-only: no verified match in TU 1
+0x8376124C = {}
+0x83767E4C = {}
+0x83778CAC = {}
+0x83785FA4 = {}
+# 0x8378AF74 = {}  # base-only: no verified match in TU 1
+0x83790C6C = {}
+0x83790D44 = {}
+0x83790EAC = {}
+0x83790ED4 = {}
+0x83790F1C = {}
+0x83791024 = {}
+0x837910FC = {}
+0x83791524 = {}
+0x837915FC = {}
+0x83791694 = {}
+0x837917F4 = {}
+0x8379195C = {}
+0x83791D1C = {}
+0x83792D94 = {}
+0x83798924 = {}
+0x83799654 = {}
+0x8379EFE8 = {}
+0x837A932C = {}
+0x837A961C = {}
+0x837AA1E4 = {}
+# 0x837B56CC = {}  # base-only: no verified match in TU 1
+0x837C1F60 = {}
+0x837C1F68 = {}
+0x837C1F70 = {}
+0x837DB154 = {}
+0x837E247C = {}
+0x837F3A50 = {}
+0x838014B0 = {}
+0x83802128 = {}
+0x838027B4 = {}
+0x8381C208 = {}
+0x8384846C = {}
+0x83848FB8 = {}
+0x8384AD20 = {}
+0x8384BD4C = {}
+0x838670C8 = {}
+0x8386C938 = {}
+0x8386FC4C = {}
+0x838767AC = {}
+0x8387B074 = {}
+0x8387C56C = {}
+0x83893B18 = {}
+0x838952A4 = {}
+0x838AAE08 = {}
+0x838BCDF8 = {}
+0x838D29B4 = {}
+0x838D7500 = {}
+0x838EADEC = {}
+0x838F53A8 = {}
+0x838F5BDC = {}
+0x838F840C = {}
+0x838FB72C = {}
+0x838FEF40 = {}
+0x8390CFFC = {}
+0x8390DF90 = {}
+0x8390E728 = {}
+0x83915F28 = {}
+0x839237DC = {}
+0x83933788 = {}
+0x839337C8 = {}
+# 0x839359E8 = {}  # base-only: no verified match in TU 1
+# 0x839359F8 = {}  # base-only: no verified match in TU 1
+0x83951BD0 = {}
+0x839522C8 = {}
+0x83955D98 = {}
+0x83955E58 = {}
+0x83955E70 = {}
+0x83965440 = {}
+0x83966B60 = {}
+0x83980A70 = {}
+0x83980AC8 = {}
+0x83980B2C = {}
+0x83980B5C = {}
+0x83987F88 = {}
+0x839AD398 = {}
+0x839AD3B0 = {}
+0x839AD3C8 = {}
+0x839AD3E0 = {}
+0x839AD3F8 = {}
+0x839AD410 = {}
+0x839AD428 = {}
+0x839AD440 = {}
+0x839CA7E0 = {}
+0x83A145E8 = {}
+0x83A14850 = {}
+0x83A14A08 = {}
+0x83A14A30 = {}
+0x83A14A70 = {}
+0x83A15AE8 = {}
+# 0x83A327F0 = {}  # base-only: no verified match in TU 1
+# 0x83A32950 = {}  # base-only: no verified match in TU 1
+# 0x83A32A80 = {}  # base-only: no verified match in TU 1
+# 0x83A32C28 = {}  # base-only: no verified match in TU 1
+# 0x83A32EE8 = {}  # base-only: no verified match in TU 1
+# 0x83A33098 = {}  # base-only: no verified match in TU 1
+# 0x83A335C0 = {}  # base-only: no verified match in TU 1
+# 0x83A33AF0 = {}  # base-only: no verified match in TU 1
+# 0x83A33BB0 = {}  # base-only: no verified match in TU 1
+# 0x83A33DF0 = {}  # base-only: no verified match in TU 1
+# 0x83A33F08 = {}  # base-only: no verified match in TU 1
+0x83A36058 = {}
+0x83A36610 = {}
+0x83A36618 = {}
+0x83A36B50 = {}
+0x83A36CF0 = {}
+0x83A36E08 = {}
+0x83A36E14 = {}
+0x83A3B320 = {}
+0x83A3BAD0 = {}
+0x83A3BCB0 = {}
+0x83A3DDB8 = {}
+0x83A3EE30 = {}
+0x83A3F4F0 = {}
+0x83A3F6A0 = {}
+0x83A40750 = {}
+0x83A41698 = {}
+0x83A43804 = {}
+0x83A438E0 = {}
+0x83A43A88 = {}
+0x83A43AE8 = {}
+0x83A4AB90 = {}
+0x83A4AE90 = {}
+0x83A4B748 = {}
+0x83A4BBE0 = {}
+0x83A4C150 = {}
+0x83A4C628 = {}
+0x83A4CE40 = {}
+0x83A4CE60 = {}
+0x83A4CFB8 = {}
+0x83A4D324 = {}
+0x83A4D330 = {}
+0x83A4D348 = {}
+0x83A4D464 = {}
+0x83A4D9F0 = {}
+0x83A4DB44 = {}
+0x83A4DB64 = {}
+0x83A4DCD8 = {}
+0x83A4F8B0 = {}
+0x83A53F58 = {}
+0x83A53FF8 = {}
+0x83A54528 = {}
+0x83A54E20 = {}
+0x83A620F8 = {}
+0x83A629E0 = {}
+0x83A629F8 = {}
+0x83A638D4 = {}
+0x83A64D70 = {}
+0x83A6642C = {}
+0x83A6687C = {}
+0x83A81AA8 = {}
+0x83A85E08 = {}
+0x83A85EA8 = {}
+0x83A87474 = {}
+0x83A87CD8 = {}
+0x83A87FFC = {}
+0x83A89DFC = {}
+0x83A8B9B8 = {}
+0x83A8DE14 = {}
+0x83A8F0A0 = {}
+0x83A96CF4 = {}
+0x83A96D18 = {}
+0x83A96D80 = {}
+0x83AA7918 = {}
+0x83AACFC8 = {}
+0x83AAE2E0 = {}
+0x83AAFBE8 = {}
+0x83AB1ED4 = {}
+0x83AB6B40 = {}
+0x83ABE080 = {}
+0x83AC2118 = {}
+0x83ACF2E0 = {}
+0x83ADDE10 = {}
+0x83AEF2FC = {}
+0x83B0EF3C = {}
+0x83B0EF54 = {}
+0x83B0EF6C = {}
+0x83B0FB00 = {}
+0x83B0FB18 = {}
+0x83B0FB30 = {}
+0x83B1E170 = {}
+0x83B21040 = {}
+0x83B21068 = {}
+0x83B21090 = {}
+0x83B32348 = {}
+0x83B32370 = {}
+0x83B32398 = {}
+0x83B323B0 = {}
+0x83B323C8 = {}
+0x83B323E0 = {}
+0x83B323F8 = {}
+0x83B325FC = {}
+0x83B3BF80 = {}
+0x83B3E390 = {}
+0x83B3E3A0 = {}
+0x83B40760 = {}
+0x83B40768 = {}
+0x83B40A64 = {}
+0x83B67278 = {}
+0x83BAF8CC = {}
+0x83BAFB2C = {}
+0x83BC82D8 = {}
+0x83BC82E0 = {}
+0x83BC8FC0 = {}
+0x83BC8FD0 = {}
+0x83BC9920 = {}
+0x83BC9930 = {}
+0x83BEDD78 = {}
+0x83BF2EE0 = {}
+0x83BF43E8 = {}
+0x83C4A280 = {}
+0x83C71F70 = {}
+0x83C79398 = {}
+0x83C84BC8 = {}
+# 0x83C83ACC = {}  # base-only: no verified match in TU 1
+0x83C890E0 = {}
+0x83C89128 = {}
+0x83C89138 = {}
+0x83C8C7B4 = {}
+0x83C8C7D8 = {}
+0x83C8C800 = {}
+0x83C8C828 = {}
+0x83C92E10 = {}
+0x83C92E18 = {}
+0x83C8DAC0 = {}
+0x83C8DAC8 = {}
+0x83C8DAD0 = {}
+0x83C8DAE0 = {}
+0x83C8DAE8 = {}
+0x83C8DB40 = {}
+0x83C92E30 = {}
+0x83C92E40 = {}
+0x83C92E48 = {}
+0x83C92E50 = {}
+0x83C92E58 = {}
+0x83C941D8 = {}
+0x83C941E0 = {}
+0x83C941E8 = {}
+0x83C941F0 = {}
+0x83C941F8 = {}
+0x83C94200 = {}
+0x83C94208 = {}
+0x83C94304 = {}
+0x83C94428 = {}
+0x83C94450 = {}
+0x83C94478 = {}
+0x83C94960 = {}
+0x83C956B8 = {}
+0x83C96418 = {}
+0x83C99300 = {}
+0x83CA2E48 = {}
+0x83CA5910 = {}
+0x83CA5950 = {}
+0x83CA5960 = {}
+0x83CA70F0 = {}
+0x83CA7100 = {}
+0x83CA8A40 = {}
+0x83CA8A50 = {}
+0x83CC86B0 = {}
+0x83CC876C = {}
+0x83CC9E50 = {}
+0x83CC9E80 = {}
+0x83CD845C = {}
+0x83D13CD0 = {}
+0x83D13DE0 = {}
+0x83D2978C = {}
+# 0x83D38484 = {}  # base-only: no verified match in TU 1
+0x83D39884 = {}
+0x83D3A930 = {}
+0x83D3A940 = {}
+0x83D3A950 = {}
+0x83D3A960 = {}
+0x83D3A970 = {}
+0x83D3A980 = {}
+0x83D52C50 = {}
+# 0x83D53678 = {}  # base-only: no verified match in TU 1
+0x83D54A88 = {}
+# 0x83D53D20 = {}  # base-only: no verified match in TU 1
+0x83D55380 = {}
+0x83D553B0 = {}
+0x83D563B0 = {}
+0x83D65508 = {}
+0x83D70E88 = {}
+0x83D70F40 = {}
+# 0x83D701C8 = {}  # base-only: no verified match in TU 1
+0x83D716F8 = {}
+0x83D71710 = {}
+0x83D71CFC = {}
+0x83D80980 = {}
+0x83D809A0 = {}
+0x83D818F8 = {}
+# 0x83D80430 = {}  # base-only: no verified match in TU 1
+0x83D81928 = {}
+0x83D81938 = {}
+0x83D81948 = {}
+# 0x83D80470 = {}  # base-only: no verified match in TU 1
+# 0x83D80480 = {}  # base-only: no verified match in TU 1
+0x83D81988 = {}
+0x83D81998 = {}
+0x83D819A8 = {}
+0x83D819B8 = {}
+0x83D819C8 = {}
+0x83D819D8 = {}
+0x83D819E8 = {}
+0x83D819F8 = {}
+0x83D81A18 = {}
+0x83D81A28 = {}
+0x83D81A38 = {}
+0x83D81A48 = {}
+0x83D81A58 = {}
+# 0x83D86EF0 = {}  # base-only: no verified match in TU 1
+0x83DC89D8 = {}
+0x83DC8A00 = {}
+0x83DC8A20 = {}
+0x83DCA068 = {}
+0x83DCD2F4 = {}
+0x83DDBAB8 = {}
+0x83E2F0C8 = {}
+0x83E2F0D0 = {}
+0x83E7F700 = {}
+0x83E7F784 = {}
+0x83E9ADC0 = {}
+0x83E9ADD8 = {}
+0x83E9ADF0 = {}
+0x83E9AE08 = {}
+0x83E9AE20 = {}
+0x83E9AE38 = {}
+0x83E9AE50 = {}
+0x83E9AE68 = {}
+0x83E9AE80 = {}
+0x83E9AE98 = {}
+0x83E9AEB0 = {}
+0x83E9AEC8 = {}
+0x83E9AEE0 = {}
+0x83E9AEF8 = {}
+0x83E9AF10 = {}
+0x83E9AF28 = {}
+0x83E9AF40 = {}
+0x83E9AF58 = {}
+0x83EA37F4 = {}
+
+# Job worker: wait for the task's function (task+8) before calling it (src/main_hooks/task_wait_hook.cpp).
+[[midasm_hook]]
+address = 0x83241CA0
+name = "Ao2dcWaitForTaskFunction"
+registers = ["r11", "r3", "r31"]
+jump_address_on_true = 0x83241CA8
+
+# Optional 60 FPS (ao2dc_frame_rate, src/main_hooks/frame_rate_hook.cpp).
+# Frame pacer: 0x82EED238 in sub_82EED220, right after `lwz r29,44(r3)` (r3 = pacer, r29 = settings).
+[[midasm_hook]]
+address = 0x82EED438
+name = "Ao2dcFramePacer"
+registers = ["r3", "r29"]
+
+# Frame calibration: 0x82EE72F4 in sub_82EE7220, right after `addi r11,r11,2`.
+[[midasm_hook]]
+address = 0x82EE749C
+name = "Ao2dcCalibrationStep"
+registers = ["r11"]
+
+# Pacer constructor: 0x82EED064 in sub_82EED050, before `mr r30,r5` (r5 = fixed rate).
+[[midasm_hook]]
+address = 0x82EED264
+name = "Ao2dcPacerConstruct"
+registers = ["r5"]
+
+# D3D flip interval: 0x82CB85EC in the flip callback sub_82CB85A0, right after
+# `rlwinm r29,r30,24,28,31` (r29 = vblank interval).
+[[midasm_hook]]
+address = 0x82CB85EC
+name = "Ao2dcFlipInterval"
+registers = ["r29"]
+
+# EA-XAS decoder diagnostics (ao2dc_xas_check, src/main_hooks/xas_check_hook.cpp).
+# sub_8388FE88: 0x8388FE9C is the first input load (r4 = block, r5 = output); 0x83890268 follows
+# the decode loop.
+[[midasm_hook]]
+address = 0x8389170C
+name = "Ao2dcXasBlockStart"
+registers = ["r4", "r5"]
+
+[[midasm_hook]]
+address = 0x83891AD8
+name = "Ao2dcXasBlockEnd"
+registers = []
+
+# EaLayer3 (decoder B) output-stage diagnostics (ao2dc_xas_check, src/main_hooks/xas_check_hook.cpp):
+# clamp-high / clamp-low stores and the float-path store in sub_838D8668 and sub_838D8BC0.
+[[midasm_hook]]
+address = 0x838D9D5C
+name = "Ao2dcL3Clamp"
+registers = []
+
+[[midasm_hook]]
+address = 0x838D9D6C
+name = "Ao2dcL3Clamp"
+registers = []
+
+[[midasm_hook]]
+address = 0x838D9D00
+name = "Ao2dcL3Float"
+registers = ["f13"]
+
+[[midasm_hook]]
+address = 0x838DA220
+name = "Ao2dcL3Clamp"
+registers = []
+
+[[midasm_hook]]
+address = 0x838DA230
+name = "Ao2dcL3Clamp"
+registers = []
+
+[[midasm_hook]]
+address = 0x838DA1B8
+name = "Ao2dcL3Float"
+registers = ["f13"]
+
+# Layer III decoder activity counters (ao2dc_xas_check): antialias entry of decoder A and B,
+# and the fctiwz of decoder B's 16-bit output path.
+[[midasm_hook]]
+address = 0x838BAC0C
+name = "Ao2dcL3GranuleA"
+registers = []
+
+[[midasm_hook]]
+address = 0x838DCAAC
+name = "Ao2dcL3GranuleB"
+registers = []
+
+[[midasm_hook]]
+address = 0x838D9D78
+name = "Ao2dcL3IntSample"
+registers = []
+
+[[midasm_hook]]
+address = 0x838DA23C
+name = "Ao2dcL3IntSample"
+registers = []
+
+# Mixer filter design diagnostics (ao2dc_xas_check): sub_838A5CC0 after its coefficient stores.
+[[midasm_hook]]
+address = 0x838A75A8
+name = "Ao2dcFilterDesign"
+registers = ["r31", "f30", "f31"]
+
+# More mixer filter-design diagnostics (ao2dc_xas_check): designers B, C (scalar) and V1, V2 (vector).
+[[midasm_hook]]
+address = 0x838A7308
+name = "Ao2dcFilterDesignB"
+registers = ["r31"]
+
+[[midasm_hook]]
+address = 0x838A7494
+name = "Ao2dcFilterDesignC"
+registers = ["r31"]
+
+[[midasm_hook]]
+address = 0x838A5718
+name = "Ao2dcFilterDesignV1"
+registers = ["r31"]
+
+[[midasm_hook]]
+address = 0x838A54BC
+name = "Ao2dcFilterDesignV2"
+registers = ["r31"]
+
+# Audio mix-job threading test (ao2dc_audio_single_mix_job, src/main_hooks/xas_check_hook.cpp).
+[[midasm_hook]]
+address = 0x82E3B334
+name = "Ao2dcAudioMultipleMixJobs"
+registers = ["r6"]
+
+[[midasm_hook]]
+address = 0x82E3B33C
+name = "Ao2dcAudioMaxMixJobThreads"
+registers = ["r11"]
+
+# Biquad runaway check (ao2dc_xas_check): sub_838A58C0 after its 8-sample loop.
+[[midasm_hook]]
+address = 0x838A7240
+name = "Ao2dcBiquadEnd"
+registers = ["f6", "f3", "r6", "r3"]
+
+# Filter transaction recorder (ao2dc_filter_rec, src/main_hooks/filter_recorder.cpp):
+# sub_838A58C0 entry after the prologue (arguments still in r3-r7, caller LR at r1+184) and the
+# common exit at 0x838A5A68 (both the unrolled loop and the generic sub_838A5750 path reach it).
+[[midasm_hook]]
+address = 0x838A70C4
+name = "Ao2dcFilterRecEntry"
+registers = ["r1", "r3", "r4", "r5", "r6", "r7"]
+
+[[midasm_hook]]
+address = 0x838A7258
+name = "Ao2dcFilterRecExit"
+registers = []
+
+# Mix writer probe (ao2dc_mix_probe, src/main_hooks/mix_writer_probe.cpp): sub_83CA7D40 after its
+# wait succeeds and before it copies the interleaved buffer at *(r31+60) for submission.
+[[midasm_hook]]
+address = 0x83CA8FE4
+name = "Ao2dcMixProbeSubmit"
+registers = ["r31"]
+
+# Mix writer probe: entry of sub_83CABE50, the VMX volume-ramp kernel that writes the submitted
+# interleaved buffer (r3 = parameter block: +0 src, +4 dst, +8/+12 gain pointers, +20 count,
+# +24 layout, +32 accumulate, +36 mono flag).
+[[midasm_hook]]
+address = 0x83CAD050
+name = "Ao2dcMixProbeKernel"
+registers = ["r3"]
+
+# Mix writer probe: XAudio2 source voice memcpy of the queued client buffer into the voice's input
+# scratch, in sub_83CC7E18 (both call sites; r3 dst, r4 src, r5 bytes, r31 voice).
+[[midasm_hook]]
+address = 0x83CC9084
+name = "Ao2dcMixProbeVoiceCopy"
+registers = ["r3", "r4", "r5", "r31"]
+
+[[midasm_hook]]
+address = 0x83CC90A4
+name = "Ao2dcMixProbeVoiceCopy"
+registers = ["r3", "r4", "r5", "r31"]
+
+# The copy that actually fills the voice scratch each frame (client buffer tail -> scratch).
+[[midasm_hook]]
+address = 0x83CC9134
+name = "Ao2dcMixProbeVoiceCopy"
+registers = ["r3", "r4", "r5", "r31"]
+
+# Centre-path transaction recorder (ao2dc_centre_rec, src/main_hooks/centre_recorder.cpp).
+# AudioCore graph: generator dispatch in sub_838A63E8 and plugin dispatch in sub_838A6780.
+[[midasm_hook]]
+address = 0x838A7C94
+name = "Ao2dcCentreGenBefore"
+registers = ["r3", "r4"]
+
+[[midasm_hook]]
+address = 0x838A7C98
+name = "Ao2dcCentreGenAfter"
+registers = ["r3", "r25", "r26", "r27", "r30", "r31"]
+
+[[midasm_hook]]
+address = 0x838A80E4
+name = "Ao2dcCentreProcBefore"
+registers = ["r3", "r4"]
+
+[[midasm_hook]]
+address = 0x838A80E8
+name = "Ao2dcCentreProcAfter"
+registers = ["r3", "r25", "r28", "r29", "r30", "r31"]
+
+# AudioCore output stage sub_8388D980: the clamp call sub_838BDD20(buf, 1536, f1, f2) and after.
+[[midasm_hook]]
+address = 0x8388F384
+name = "Ao2dcCentreClampBefore"
+registers = ["r3", "r6", "f1", "f2"]
+
+[[midasm_hook]]
+address = 0x8388F388
+name = "Ao2dcCentreClampAfter"
+registers = ["r31"]
+
+[[midasm_hook]]
+address = 0x8388F1F8
+name = "Ao2dcCentreOutputEntry"
+registers = ["r4"]
+
+# Gain-writer probe (ao2dc_mix_probe_gain): entry of the AudioCore gain plugin process function.
+[[midasm_hook]]
+address = 0x83889650
+name = "Ao2dcMixProbeGain"
+registers = ["r3", "r5"]
+
+# Centre recorder, aligned voice-source points in sub_838A63E8: generator process (decoder /
+# sample player / resampler), the sub_838A6320 silence fallback, and the assembled node block.
+[[midasm_hook]]
+address = 0x838A7D30
+name = "Ao2dcCentreGenProcBefore"
+registers = ["r3", "r4"]
+
+[[midasm_hook]]
+address = 0x838A7D34
+name = "Ao2dcCentreGenProcAfter"
+registers = ["r3", "r19", "r25", "r26", "r30", "r31"]
+
+[[midasm_hook]]
+address = 0x838A7D50
+name = "Ao2dcCentreFallbackBefore"
+registers = ["r3", "r5"]
+
+[[midasm_hook]]
+address = 0x838A7D54
+name = "Ao2dcCentreFallbackAfter"
+registers = ["r3", "r25", "r26", "r30", "r31"]
+
+[[midasm_hook]]
+address = 0x838A7E44
+name = "Ao2dcCentreNodeOut"
+registers = ["r21", "r25", "r26"]
+
+# Creation watch (ao2dc_create_watch, src/main_hooks/mix_writer_probe.cpp): entry of
+# sub_8386AEC8, which initialises the embedded type-0x82A11114 object of AudioCore nodes/plugins.
+[[midasm_hook]]
+address = 0x8386C6D8
+name = "Ao2dcCreateWatchInit"
+registers = ["r3"]
+
+# Gain init watch (ao2dc_gain_init_watch): end of the AudioCore gain plugin init sub_8388AA40,
+# after the defaults are written (r31 = new plugin).
+[[midasm_hook]]
+address = 0x8388C2E8
+name = "Ao2dcGainInitWatch"
+registers = ["r31"]
+
+# AudioCore parameter-set requests (ao2dc_param_set_log): entry of sub_83869D08
+# (r3 = plugin, r4 = parameter index, f1 = value).
+[[midasm_hook]]
+address = 0x8386B518
+name = "Ao2dcParamSet"
+registers = ["r3", "r4", "f1"]
+
+# Staging watch (ao2dc_staging_watch): game parameter flush sub_82E2CC20, before
+# "lfs f1,4(r11)" at 0x82E2CCDC (r11+4 = staging slot, r27 = plugin, r30 = parameter index).
+[[midasm_hook]]
+address = 0x82E2C74C
+name = "Ao2dcStagingWatch"
+registers = ["r11", "r27", "r30"]
+
+# Game voice gain calculation inputs (ao2dc_gain_calc_log): sub_82E2A040 just before it calls
+# sub_82E1F088 with f1 = f31 and f2 = f30 (gain).
+[[midasm_hook]]
+address = 0x82E2AE6C
+name = "Ao2dcGainCalc"
+registers = ["r1", "r14", "r16", "r20", "r31", "f30", "f31"]
+
+# Game parameter staging (ao2dc_stage_set_log): entry of sub_82E2CFC0
+# (r3 = patch, r4 = parameter reference, r5 = index, f1 = value).
+[[midasm_hook]]
+address = 0x82E2CA30
+name = "Ao2dcStageSet"
+registers = ["r1", "r3", "r4", "r5", "f1"]
+
+# Same gain calculation, second call site (0x82E2B458), before "fmr f2,f30" at 0x82E2B44C.
+[[midasm_hook]]
+address = 0x82E2AE9C
+name = "Ao2dcGainCalc"
+registers = ["r1", "r14", "r16", "r20", "r31", "f30", "f31"]
+
+# EA-XAS decoder capture (ao2dc_xas_capture): entry of sub_8388FE88 (r4 = block, r5 = output)
+# and its tail after the decode loop.
+[[midasm_hook]]
+address = 0x838916F8
+name = "Ao2dcXasEntry"
+registers = ["r4", "r5"]
+
+[[midasm_hook]]
+address = 0x83891AD8
+name = "Ao2dcXasExit"
+registers = []
+
+# Sample-entry gain writer (ao2dc_entry_gain_watch): sub_83ED8858 right after it stores the
+# default 1.0 at entry+20 (r31 = entry).
+[[midasm_hook]]
+address = 0x83ED8984
+name = "Ao2dcEntryGainWatch"
+registers = ["r31"]
+
+# Opt-in pre-clip bus trim / statistics (ao2dc_preclip_trim, ao2dc_preclip_stats):
+# entry of AudioCore's hard clip sub_83887878 (r3 = plugin, r4 = ctx).
+[[midasm_hook]]
+address = 0x83889060
+name = "Ao2dcPreClip"
+registers = ["r3", "r4"]
+
+# SndPlayer instrumentation (ao2dc_sndplayer_log), sub_83876660 exits:
+# 0x83876CA4 returns 0 (starved), 0x83876CB0 segment format switch, 0x838768A8 / 0x83876CD4 return 1.
+[[midasm_hook]]
+address = 0x8387859C
+name = "Ao2dcSndStarve"
+registers = ["r28", "r31"]
+
+[[midasm_hook]]
+address = 0x838785A8
+name = "Ao2dcSndFormat"
+registers = ["r28", "r31"]
+
+[[midasm_hook]]
+address = 0x838781A0
+name = "Ao2dcSndOk"
+registers = ["r31"]
+
+[[midasm_hook]]
+address = 0x838785CC
+name = "Ao2dcSndOk"
+registers = ["r31"]
+
+# Ping capture (ao2dc_ping_capture): entry of sub_82E218B8, the audio system per-frame update
+# (r3 = audio system object).
+[[midasm_hook]]
+address = 0x82E21620
+name = "Ao2dcPingAudioSys"
+registers = ["r3"]
+
+# Ping capture, zoom foley (FL_Wpn_Zoom) requests: the two callers of sub_82F5D2E0, each hooked
+# before its "bl". 0x82FF7F28 in sub_82FF7D80: r3 = weapon sound state, r4 = zoom level,
+# r20 = weapon, r28 = owner. 0x83074094 in sub_83073FC0: r3, r4 = zoom flag, r30 = owner,
+# r31 = weapon component.
+[[midasm_hook]]
+address = 0x82FF7FC8
+name = "Ao2dcPingZoomA"
+registers = ["r1", "r3", "r4", "r20", "r28"]
+
+[[midasm_hook]]
+address = 0x8307442C
+name = "Ao2dcPingZoomB"
+registers = ["r1", "r3", "r4", "r30", "r31"]
+
+# Ping capture: entry of sub_82F5D030, which posts the pending foley event (ZoomIn / ZoomOut)
+# to the weapon's foley sound (r3 = weapon sound state).
+[[midasm_hook]]
+address = 0x82F5CBA0
+name = "Ao2dcPingFoley"
+registers = ["r1", "r3"]
+
+# Ping capture: entry of sub_82E39440, the emitter update (r3 = emitter).
+[[midasm_hook]]
+address = 0x82E38FC8
+name = "Ao2dcPingEmitter"
+registers = ["r1", "r3"]

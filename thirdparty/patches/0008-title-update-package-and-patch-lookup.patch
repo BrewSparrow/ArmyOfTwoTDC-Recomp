@@ -1,0 +1,82 @@
+diff --git a/src/codegen/project_recompiler.cpp b/src/codegen/project_recompiler.cpp
+index 240bcb0..fb75c3c 100644
+--- a/src/codegen/project_recompiler.cpp
++++ b/src/codegen/project_recompiler.cpp
+@@ -42,6 +42,10 @@
+ #include "file_io.h"
+ #include "template_registry_internal.h"
+ 
++// Runtime option (runtime.cpp): a title update to apply while loading the XEX files (a LIVE package
++// or its extracted folder). Its .xexp patches are found under UPDATE:\ as on the console.
++REXCVAR_DECLARE(std::string, update_data_root);
++
+ namespace rex::codegen {
+ 
+ namespace {
+@@ -238,7 +242,8 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
+                                  entryXexPath.string(), gameRoot.string()));
+   }
+ 
+-  auto runtime = std::make_unique<Runtime>(gameRoot.string());
++  auto runtime = std::make_unique<Runtime>(gameRoot.string(), std::filesystem::path{},
++                                           std::filesystem::path(REXCVAR_GET(update_data_root)));
+   auto rtStatus = runtime->Setup(rex::RuntimeConfig{
+       .kernel_init = rex::kernel::InitializeKernel,
+       .tool_mode = true,
+diff --git a/src/system/runtime.cpp b/src/system/runtime.cpp
+index c10694c..af38458 100644
+--- a/src/system/runtime.cpp
++++ b/src/system/runtime.cpp
+@@ -13,6 +13,7 @@
+ #include <rex/cvar.h>
+ #include <rex/filesystem/devices/host_path_device.h>
+ #include <rex/filesystem/devices/null_device.h>
++#include <rex/filesystem/devices/stfs_container_device.h>
+ #include <rex/filesystem/vfs.h>
+ #include <rex/logging.h>
+ #include <rex/perf/counter.h>
+@@ -327,11 +328,20 @@ bool Runtime::SetupVfs() {
+     auto abs_update_root = std::filesystem::absolute(update_data_root_);
+     if (std::filesystem::exists(abs_update_root)) {
+       auto update_mount = "\\Device\\Harddisk0\\PartitionUpdate";
+-      auto update_device =
+-          std::make_unique<rex::filesystem::HostPathDevice>(update_mount, abs_update_root, true);
++      // A title update can be given as its extracted folder or as the LIVE package itself.
++      std::unique_ptr<rex::filesystem::Device> update_device;
++      if (std::filesystem::is_regular_file(abs_update_root)) {
++        update_device = std::make_unique<rex::filesystem::StfsContainerDevice>(update_mount,
++                                                                              abs_update_root);
++      } else {
++        update_device =
++            std::make_unique<rex::filesystem::HostPathDevice>(update_mount, abs_update_root, true);
++      }
+       if (update_device->Initialize() && file_system_->RegisterDevice(std::move(update_device))) {
+         file_system_->RegisterSymbolicLink("update:", update_mount);
+-        REXSYS_DEBUG("  Mounted {} at update:", abs_update_root.string());
++        REXSYS_INFO("Title update mounted at update: from {}", abs_update_root.string());
++      } else {
++        REXSYS_ERROR("Title update at {} could not be mounted", abs_update_root.string());
+       }
+     }
+   }
+diff --git a/src/system/user_module.cpp b/src/system/user_module.cpp
+index 171546f..4d1a6bd 100644
+--- a/src/system/user_module.cpp
++++ b/src/system/user_module.cpp
+@@ -102,8 +102,15 @@ X_STATUS UserModule::LoadFromFile(const std::string_view path) {
+     return result;
+   }
+ 
+-  // Search for sibling XEX patch file
++  // Search for sibling XEX patch file, then for one in the title update (update:\<name>p), which is
++  // where the console keeps a title update's patches.
+   auto patch_entry = kernel_state_->file_system()->ResolvePath(path_ + "p");
++  std::string update_target;  // only when a title update is mounted (no error log otherwise)
++  if (!patch_entry && kernel_state_->file_system()->FindSymbolicLink("update:", update_target)) {
++    const auto slash = path_.find_last_of("\\/");
++    const std::string name = slash == std::string::npos ? path_ : path_.substr(slash + 1);
++    patch_entry = kernel_state_->file_system()->ResolvePath("update:\\" + name + "p");
++  }
+   if (patch_entry) {
+     auto patch_path = patch_entry->absolute_path();
+ 

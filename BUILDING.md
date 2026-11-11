@@ -48,6 +48,28 @@ Supported release: Title ID `454109AB`, Media ID `60F8EF51`, version `0.0.0.11`,
 | `AO4.Main.xex` | `bedc9c918716454fdf6573af154073052272597c8b43329ed24c62b62cc2c137` |
 | `Engine.BuildInfo.xex` | `575af0d4d5ceb1e51c1a0fc5c918d35467d02b06fc11dc6fa765c7c5b5cb0e52` |
 
+### Optional: Title Update 1 and DLC
+
+Copy these from your own console's storage (for example with a USB drive or FTP on a modded
+console). They are not part of any release and are never committed.
+
+- **Title Update 1:** put `TU_12K22DB_000001C000000.000000000008B` (from
+  `Content\0000000000000000\454109AB\000B0000\`) in `title_update\`. Only this update is
+  supported (version 0.0.1.11, SHA-256
+  `12a417208649711a53687ea33be0049409b965cae7cd82d9406ed2bd536f5675`). The build recompiles the
+  updated code from it, so **add or remove it before building**, then rebuild.
+- **DLC:** put the packages from `Content\0000000000000000\454109AB\00000002\` in `dlc\`:
+  `8BBB0270061C248F30443C9885CB502300E2C03D45` (Hitmakers Pack) and
+  `9DDFDADC8879D83BEE746E3C54945866E095576745` (Online Pass and Overkill Edition content). They
+  are installed into `user\` when the game starts; no rebuild is needed. Avatar items
+  (`00009000`) are not supported, and online features (including the online pass) do not work.
+
+```
+title_update\TU_12K22DB_000001C000000.000000000008B
+dlc\8BBB0270061C248F30443C9885CB502300E2C03D45
+dlc\9DDFDADC8879D83BEE746E3C54945866E095576745
+```
+
 ## Building
 
 1. Get the source **with the ReXGlue SDK**, either way:
@@ -69,7 +91,8 @@ The script:
 
 1. checks that the required files are in `assets\`;
 2. checks the SHA-256 of the three XEX files. On a mismatch it explains why and stops, without
-   touching your files;
+   touching your files. It also checks the title update in `title_update\`, if any, and counts
+   the packages in `dlc\`;
 3. finds Visual Studio (via `vswhere`), LLVM/Clang, CMake, Ninja and Git;
 4. fetches the SDK submodule if it is missing;
 5. configures the project (`cmake --preset win-amd64-release`), which also applies the local SDK
@@ -97,12 +120,24 @@ cmake --build out\build\win-amd64-release
 Run `out\build\win-amd64-release\ArmyOfTwoTDC X360 Recomp.exe`. It finds the project folder
 (the one holding `ao2dc_manifest.toml`) and reads the game from `assets\`. Saves go to `user\`, the
 shader cache to `cache\` and settings to `settings\hardware.toml`, all inside the project. Press
-`F4` in game for settings.
+`F4` in game for settings. With Title Update 1 built in, the game mounts the package from
+`title_update\` as `UPDATE:`; DLC from `dlc\` shows up in game after the first start.
+
+The log is written to `logs\ui2.log` relative to the folder you start the game from, so start it
+from the build folder:
+
+```
+cd /d out\build\win-amd64-release
+"ArmyOfTwoTDC X360 Recomp.exe"
+```
 
 ## Troubleshooting
 
 - **Hash mismatch:** a different region or version, an installed title update, or a damaged
-  dump. Re-dump or re-extract the disc.
+  dump. Re-dump or re-extract the disc. The title update goes in `title_update\`, never into
+  `assets\`.
+- **Unsupported title update:** only Title Update 1 is supported. Remove the file from
+  `title_update\` to build the disc version.
 - **Out of memory during code generation:** close other programs; about 16 GB of free RAM is
   needed.
 - **"clang not found" or "Visual Studio not found":** install the prerequisites above, then open a

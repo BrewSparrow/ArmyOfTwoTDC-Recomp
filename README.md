@@ -1,4 +1,4 @@
-# Army of Two: The Devil's Cartel - Xbox 360 recompilation
+# Army of Two: The Devil's Cartel - PC recompilation
 
 <p align="center">
   <img src="docs/ArmyofTwo_TheDevilsCartel.jpeg" alt="Army of Two: The Devil's Cartel cover art" width="300">
@@ -113,6 +113,13 @@ Target retail release (verify your dump matches):
 `default.xex`, `AO4.Main.xex` and `Engine.BuildInfo.xex` all carry the Title ID, Media ID and
 version above. The build also prints them for every XEX it recompiles. Check the hashes with
 `certutil -hashfile assets\AO4.Main.xex SHA1` (Windows) or `sha1sum assets/*.xex`.
+
+### Optional: Title Update 1 and DLC
+
+Put Title Update 1 (`TU_12K22DB_000001C000000.000000000008B`, from your console) in
+`title_update/` before building, and DLC packages (Hitmakers Pack, Online Pass and Overkill
+Edition content) in `dlc/`. Avatar items are not supported and online features do not work.
+[BUILDING.md](BUILDING.md) has the details. Neither folder is tracked or released.
 
 ## Building
 

@@ -45,7 +45,12 @@ REXCVAR_DEFINE_INT32(ao2dc_frame_rate, 0, "Game",
 
 namespace {
 
-constexpr uint32_t kExpectedFrameTime = 0x84076CC0u;  // double, 1/30: calibration reference
+// double, 1/30: calibration reference. Title Update 1 (0.0.1.11) moved .data by +0x10000.
+#if AO2DC_TITLE_UPDATE
+constexpr uint32_t kExpectedFrameTime = 0x84086CC0u;
+#else
+constexpr uint32_t kExpectedFrameTime = 0x84076CC0u;
+#endif
 
 bool Active() {
   return REXCVAR_GET(ao2dc_frame_rate) > 30;
@@ -98,7 +103,17 @@ void Ao2dcFramePacer(PPCRegister& r3, PPCRegister& r29) {
   // Calibration reference: 1/target instead of 1/30 (see Ao2dcCalibrationStep).
   uint8_t* expected = memory->TranslateVirtual(kExpectedFrameTime);
   const double want_expected = 1.0 / double(target);
-  if (std::fabs(LoadDouble(expected) - want_expected) > 1e-9) {
+  const double current = LoadDouble(expected);
+  // Never write unless the address holds the reference (1/30) or our own value: a build whose
+  // address does not match the game version must leave the game untouched.
+  if (std::fabs(current - 1.0 / 30.0) > 1e-9 && std::fabs(current - want_expected) > 1e-9) {
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true))
+      REXLOG_WARN("Frame rate: 0x{:08X} holds {} instead of 1/30; 60 FPS calibration skipped "
+                  "(game version does not match this build)", kExpectedFrameTime, current);
+    return;
+  }
+  if (std::fabs(current - want_expected) > 1e-9) {
     StoreDoubleReadOnly(expected, want_expected);
     REXLOG_INFO("Frame rate {}: calibration expects {:.6f} s", target, want_expected);
   }

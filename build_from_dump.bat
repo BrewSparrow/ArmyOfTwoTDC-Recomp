@@ -12,6 +12,9 @@ set "ROOT=%CD%"
 set "ASSETS=%ROOT%\assets"
 set "BUILD_DIR=%ROOT%\out\build\win-amd64-release"
 set "PRESET=win-amd64-release"
+rem Tools such as the recompiler switch the console to UTF-8 (code page 65001); under it cmd.exe
+rem can no longer find labels in this file. Remember the code page and restore it after each tool.
+for /f "tokens=2 delims=:." %%c in ('chcp') do for /f %%d in ("%%c") do set "AO2DC_CP=%%d"
 
 echo.
 echo === AO2DC-Recomp: build from your own dump ===
@@ -57,6 +60,41 @@ if defined BAD (
     goto :fail
 )
 echo       Dump matches the supported release.
+
+rem Optional Title Update 1 package in title_update\ and DLC packages in dlc\ (see BUILDING.md).
+set "TU_FILE="
+set "TU_COUNT=0"
+if exist "%ROOT%\title_update\" for %%T in ("%ROOT%\title_update\*") do (
+    if /i not "%%~xT"==".md" if /i not "%%~xT"==".txt" (
+        set "TU_FILE=%%~fT"
+        set /a TU_COUNT+=1
+    )
+)
+if %TU_COUNT% GTR 1 (
+    echo ERROR: title_update\ must hold exactly one title update package. Remove the others.
+    goto :fail
+)
+if defined TU_FILE (
+    set "AO2DC_HASH_FILE=!TU_FILE!"
+    set "H="
+    for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -LiteralPath $env:AO2DC_HASH_FILE).Hash.ToLower()"`) do set "H=%%H"
+    if /i not "!H!"=="12a417208649711a53687ea33be0049409b965cae7cd82d9406ed2bd536f5675" (
+        echo.
+        echo ERROR: unsupported title update: !TU_FILE!
+        echo   got SHA-256 !H!
+        echo Only Title Update 1 ^(version 0.0.1.11, TU_12K22DB_000001C000000.000000000008B^) is
+        echo supported. Remove the file from title_update\ to build without the update.
+        goto :fail
+    )
+    echo       Title Update 1 found: the build includes it.
+) else (
+    echo       No title update in title_update\: building the disc version.
+)
+set "DLC_COUNT=0"
+if exist "%ROOT%\dlc\" for %%T in ("%ROOT%\dlc\*") do (
+    if /i not "%%~xT"==".md" if /i not "%%~xT"==".txt" set /a DLC_COUNT+=1
+)
+echo       DLC packages in dlc\: %DLC_COUNT% ^(installed when the game starts^).
 
 rem ---------------------------------------------------------------- 3. tools
 echo [3/7] Finding the build tools ...
@@ -110,11 +148,13 @@ rem The generated module targets only exist once codegen has run, so the project
 rem codegen is built on its own, and the project is configured again before the full build.
 echo [5/7] Configuring and recompiling the game code (needs ~16 GB free RAM; this takes a while) ...
 cmake --preset %PRESET%
+call :restorecp
 if errorlevel 1 (
     echo ERROR: CMake configure failed ^(see the messages above^).
     goto :fail
 )
 cmake --build "%BUILD_DIR%" --target ao2dc_codegen
+call :restorecp
 if errorlevel 1 (
     echo ERROR: code generation failed ^(see the messages above^).
     goto :fail
@@ -123,11 +163,13 @@ if errorlevel 1 (
 rem ---------------------------------------------------------------- 6. compile
 echo [6/7] Compiling ...
 cmake --preset %PRESET%
+call :restorecp
 if errorlevel 1 (
     echo ERROR: CMake configure after code generation failed.
     goto :fail
 )
 cmake --build "%BUILD_DIR%"
+call :restorecp
 if errorlevel 1 (
     echo ERROR: compiling failed ^(see the messages above^).
     goto :fail
@@ -150,6 +192,11 @@ echo The game reads its data from assets\; your dump was not changed.
 endlocal
 if not defined AO2DC_NO_PAUSE pause
 exit /b 0
+
+:restorecp
+set "AO2DC_ERR=%errorlevel%"
+if defined AO2DC_CP chcp %AO2DC_CP% >nul
+exit /b %AO2DC_ERR%
 
 :checkhash
 rem %1 = file in assets\, %2 = expected lowercase SHA-256

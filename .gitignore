@@ -7,6 +7,9 @@
 /generated/*
 !/generated/rexglue.cmake
 
+# Copy of the disc or Title Update 1 hints, chosen at configure time (CMakeLists.txt).
+/config/ao4_main_functions_active.toml
+
 # Build output and per-user runtime data.
 /out/
 /build/
@@ -20,3 +23,10 @@
 /.vs/
 /.vscode/
 *.rdc
+
+# Optional Title Update 1 package and DLC packages from the user's console (see BUILDING.md).
+/title_update/*
+!/title_update/README.md
+/dlc/*
+!/dlc/README.md
+/update/
