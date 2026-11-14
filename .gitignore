@@ -30,3 +30,6 @@
 /dlc/*
 !/dlc/README.md
 /update/
+
+# Graphify knowledge-graph output (local only).
+/graphify-out/

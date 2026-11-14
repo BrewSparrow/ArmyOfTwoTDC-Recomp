@@ -20,6 +20,29 @@ find_package(Git REQUIRED)
 
 file(GLOB AO2DC_SDK_PATCHES "${AO2DC_PATCH_DIR}/*.patch")
 list(SORT AO2DC_SDK_PATCHES)
+
+# A later patch can change lines next to an earlier patch's hunks (0010 does, next to 0009). Once
+# the whole set is applied, that earlier patch no longer reverse-applies on its own. So a stamp
+# holds the hash of the applied set, and later configure runs skip the set instead of
+# re-applying it.
+set(AO2DC_PATCH_SET_HASH "")
+foreach(patch IN LISTS AO2DC_SDK_PATCHES)
+    get_filename_component(patch_name "${patch}" NAME)
+    file(SHA256 "${patch}" patch_hash)
+    string(APPEND AO2DC_PATCH_SET_HASH "${patch_name}:${patch_hash};")
+endforeach()
+string(SHA256 AO2DC_PATCH_SET_HASH "${AO2DC_PATCH_SET_HASH}")
+set(AO2DC_PATCH_STAMP "${AO2DC_SDK_DIR}/.ao2dc_patches_applied")
+set(AO2DC_PATCH_STAMP_HASH "")
+if(EXISTS "${AO2DC_PATCH_STAMP}")
+    file(READ "${AO2DC_PATCH_STAMP}" AO2DC_PATCH_STAMP_HASH)
+    string(STRIP "${AO2DC_PATCH_STAMP_HASH}" AO2DC_PATCH_STAMP_HASH)
+endif()
+if(AO2DC_PATCH_STAMP_HASH STREQUAL AO2DC_PATCH_SET_HASH)
+    message(STATUS "SDK patches already applied (stamp matches this patch set)")
+    set(AO2DC_SDK_PATCHES "")
+endif()
+
 foreach(patch IN LISTS AO2DC_SDK_PATCHES)
     get_filename_component(patch_name "${patch}" NAME)
     set(already_applied 1)
@@ -47,10 +70,16 @@ foreach(patch IN LISTS AO2DC_SDK_PATCHES)
         RESULT_VARIABLE apply_result
         ERROR_VARIABLE apply_error)
     if(NOT apply_result EQUAL 0)
-        message(FATAL_ERROR "Failed to apply SDK patch ${patch_name}:\n${apply_error}")
+        message(FATAL_ERROR "Failed to apply SDK patch ${patch_name}:\n${apply_error}\n"
+            "If thirdparty/rexglue-sdk was patched by an older version of this project, restore it "
+            "(git -C thirdparty/rexglue-sdk checkout . , or extract the kit's SDK folder again), "
+            "then configure again.")
     endif()
     message(STATUS "Applied SDK patch: ${patch_name}")
 endforeach()
+if(AO2DC_SDK_PATCHES)
+    file(WRITE "${AO2DC_PATCH_STAMP}" "${AO2DC_PATCH_SET_HASH}\n")
+endif()
 
 # libmspack symlink placeholders (Windows without core.symlinks).
 set(AO2DC_MSPACK_DIR "${AO2DC_SDK_DIR}/thirdparty/libmspack/cabextract/mspack")

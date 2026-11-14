@@ -1,0 +1,4 @@
+// Windows resources for ArmyOfTwoTDC X360 Recomp.exe.
+// The first icon group is what File Explorer shows for the exe, and SDL uses the same one for the
+// game window's class icon (taskbar, Alt+Tab, title bar), so one icon covers both.
+1 ICON "ao2dc.ico"

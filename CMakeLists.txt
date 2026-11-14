@@ -77,7 +77,12 @@ set(AO2DC_SOURCES
 )
 
 if(WIN32)
-    add_executable(ao2dc WIN32 ${AO2DC_SOURCES})
+    # The exe's icon (resources/ao2dc.ico), shown in File Explorer and on the game window.
+    enable_language(RC)
+    add_executable(ao2dc WIN32 ${AO2DC_SOURCES} resources/ao2dc.rc)
+    # The resource compiler reports no dependency on the icon it embeds; rebuild when it changes.
+    set_source_files_properties(resources/ao2dc.rc PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/resources/ao2dc.ico")
 else()
     add_executable(ao2dc ${AO2DC_SOURCES})
 endif()

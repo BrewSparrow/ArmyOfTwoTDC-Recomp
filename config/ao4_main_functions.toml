@@ -1245,3 +1245,90 @@ registers = ["r1", "r3"]
 address = 0x82E39440
 name = "Ao2dcPingEmitter"
 registers = ["r1", "r3"]
+
+# SndPlayer sample-fetch trace (ao2dc_xas_probe, ping_capture.cpp): sub_8389F690(reader r3,
+# output descriptor r4, count r5), reached from SndPlayer via sub_838739D0. Entry, the two
+# float32 memcpys into the output (r3 dst, r4 src, r5 bytes), the codec callback (reader+24)
+# before/after in buffered (0x8389F80C) and direct (0x8389F984) mode, and both exits (r27 = count).
+[[midasm_hook]]
+address = 0x8389F690
+name = "Ao2dcFetchEnter"
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+address = 0x8389F730
+name = "Ao2dcFetchCopy"
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+address = 0x8389F88C
+name = "Ao2dcFetchCopy"
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+address = 0x8389F80C
+name = "Ao2dcFetchCbPre"
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+address = 0x8389F810
+name = "Ao2dcFetchCbPost"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x8389F984
+name = "Ao2dcFetchCbPre"
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+address = 0x8389F988
+name = "Ao2dcFetchCbPost"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x8389F924
+name = "Ao2dcFetchExit"
+registers = ["r27"]
+
+[[midasm_hook]]
+address = 0x8389FA00
+name = "Ao2dcFetchExit"
+registers = ["r27"]
+
+# XMA output-ring read trace (ao2dc_xas_probe, ping_capture.cpp), direct-mode codec sub_83870960:
+# after XMAGetOutputBufferWriteOffset / ReadOffset / IsOutputBufferValid, after the "ring full"
+# decision, around the ring-to-float conversion sub_8386BF70, and the not-enough-data path.
+[[midasm_hook]]
+address = 0x83870AB8
+name = "Ao2dcXmaWrite"
+registers = ["r3", "r28", "r31"]
+
+[[midasm_hook]]
+address = 0x83870AD0
+name = "Ao2dcXmaRead"
+registers = ["r3", "r30"]
+
+[[midasm_hook]]
+address = 0x83870AFC
+name = "Ao2dcXmaValid"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x83870B08
+name = "Ao2dcXmaDecided"
+registers = ["r30"]
+
+[[midasm_hook]]
+address = 0x83870C14
+name = "Ao2dcXmaPre"
+registers = ["r4", "r6", "r9", "r10", "r31"]
+
+[[midasm_hook]]
+address = 0x83870C18
+name = "Ao2dcXmaPost"
+registers = []
+
+[[midasm_hook]]
+address = 0x83870C78
+name = "Ao2dcXmaStarve"
+registers = []

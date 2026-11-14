@@ -29,6 +29,7 @@
 
 #include <windows.h>
 
+#include <rex/audio/xma/ao2dc_life.h>
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/memory/utils.h>
@@ -43,6 +44,13 @@ REXCVAR_DEFINE_BOOL(ao2dc_ping_capture, false, "AO2DC",
                     "instances, with follow-up snapshots. Restart required.");
 REXCVAR_DEFINE_INT32(ao2dc_ping_capture_quiet_max, 80, "AO2DC",
                      "Diagnostic: maximum number of gain-0.35 instances ao2dc_ping_capture records.");
+REXCVAR_DEFINE_BOOL(ao2dc_xas_probe, false, "AO2DC",
+                    "Diagnostic (needs ao2dc_ping_capture): for 700 ms after each zoom request, "
+                    "record every SndPlayer call at play start (position < 4500) with the EA-XAS "
+                    "blocks it decoded (76 input bytes, source address, 128 output samples), the "
+                    "player state, segment and slot table; plus each zoom play's voice, variant and "
+                    "nodes. Fixed in-memory buffers, written by a background thread to "
+                    "logs/xas_probe_*.bin. Replaces the per-call sndp lines. Restart required.");
 
 uint64_t Ao2dcAcFrame();
 void Ao2dcCentreRequest(uint64_t delay_ns);
@@ -54,15 +62,33 @@ std::mutex file_m;
 FILE* out = nullptr;
 std::chrono::steady_clock::time_point t0;
 
-uint32_t W(uint32_t a) { return rex::memory::load_and_swap<uint32_t>(pmem + a); }
+// Host pointer for a guest address. The 0xE0000000+ physical window is mapped 0x1000 further in
+// on Windows (rex::memory::detail::PhysicalHostOffset); XMA rings (0xEF...) and EA-XAS stream
+// data (0xEE...) live there, so plain pmem + a reads the wrong page.
+uint8_t* Host(uint32_t a) { return pmem + a + (a >= 0xE0000000u ? 0x1000u : 0u); }
 
-bool Ok(uint32_t a, uint32_t len = 4) {
-  if (a < 0x40000000u || a >= 0xA0000000u) return false;
+uint32_t W(uint32_t a) { return rex::memory::load_and_swap<uint32_t>(Host(a)); }
+
+bool Committed(uint32_t a, uint32_t len) {
   MEMORY_BASIC_INFORMATION mbi{};
-  if (!VirtualQuery(pmem + a, &mbi, sizeof(mbi))) return false;
+  if (!VirtualQuery(Host(a), &mbi, sizeof(mbi))) return false;
   if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return false;
   const uint8_t* end = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
-  return pmem + a + len <= end;
+  return Host(a) + len <= end;
+}
+
+// Guest heap/stack range only (0x40000000-0x9FFFFFFF), as in every build before 2026-11-12: the
+// logger's generic walks (stacks, hex dumps) must not follow pointers elsewhere. Widening this to
+// the physical window coincided with a Basic Training load stall.
+bool Ok(uint32_t a, uint32_t len = 4) {
+  if (a < 0x40000000u || a >= 0xA0000000u) return false;
+  return Committed(a, len);
+}
+
+// The physical window (0xE0000000+): only for the XMA ring and EA-XAS input copies.
+bool OkPhys(uint32_t a, uint32_t len) {
+  if (a < 0xE0000000u || uint64_t(a) + len > 0x100000000ull) return false;
+  return Committed(a, len);
 }
 bool Image(uint32_t a) { return a >= 0x82000000u && a < 0x84400000u; }
 bool Heap(uint32_t a) { return a >= 0x40000000u && a < 0x80000000u && Ok(a, 64); }
@@ -236,13 +262,253 @@ bool IsZoomPatch(uint32_t patch) {
   const uint32_t name = W(asset + 8);
   if (Ok(name, 96)) {
     char buf[97];
-    std::memcpy(buf, pmem + name, 96);
+    std::memcpy(buf, Host(name), 96);
     buf[96] = 0;
     for (char* c = buf; *c; ++c) *c = char(std::tolower(static_cast<unsigned char>(*c)));
     zoom = std::strstr(buf, "foley/zoom/fl_wpn_zoom") != nullptr;
   }
   if (cache.size() < 100000) cache[asset] = zoom;
   return zoom;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Per-play EA-XAS decoder-input probe (ao2dc_xas_probe). The audio thread only copies into fixed
+// arrays (no allocation, no file I/O, no VirtualQuery); ProbeWriter appends finished records.
+// Layout is mirrored in tools/xas_probe.py; guest bytes are stored raw (big-endian).
+struct ProbeBlock {
+  uint32_t in_addr, out_addr;
+  uint8_t in[76];  // the block as the decoder found it at entry (what it consumed)
+  float out[128];  // its decoded output at exit
+};
+struct ProbeSnd {
+  uint32_t magic;  // 'XPSN'
+  uint32_t player;
+  double t_ms;
+  uint64_t ac_frame;
+  uint32_t thread;
+  int32_t exit_id;   // 0 = SndPlayer returned 0, 1 = returned 1
+  uint32_t pos;      // player+0x1B4 after the call (SndPlayer position)
+  uint32_t seg;      // current segment address
+  uint32_t nblocks;  // decoded blocks attached (<= 4)
+  uint32_t dropped;  // decodes on this thread since the last SndPlayer exit beyond 4
+  uint8_t state[64];   // player+0x1A0..+0x1DF
+  uint8_t seg_bytes[48];
+  uint8_t slots[320];  // player+0x70: 20 slots x 16 bytes (data pointer, state byte +5)
+  ProbeBlock blocks[4];
+  std::atomic<uint32_t> ready;
+};
+struct ProbePlayNode {
+  uint32_t node, player;  // player = node + 0x90 (the node's SndPlayer)
+  uint32_t desc[6];
+  float p52[6];  // plugin parameter +52 (the gain plugin holds the voice gain here)
+};
+struct ProbePlay {
+  uint32_t magic;  // 'XPPL'
+  uint32_t patch;
+  double t_ms;
+  uint64_t ac_frame;
+  uint32_t voice, entry, wave, nnodes;
+  float count, gain_f30, gain_f31;
+  ProbePlayNode nodes[8];
+  std::atomic<uint32_t> ready;
+};
+// Every decoded block in a window, on whatever thread decodes it (so nothing is lost if the
+// decoder does not run on the SndPlayer's thread).
+struct ProbeXas {
+  uint32_t magic;  // 'XPXA'
+  uint32_t thread;
+  double t_ms;
+  uint64_t ac_frame;
+  ProbeBlock block;
+  std::atomic<uint32_t> ready;
+};
+// SndPlayer's sample fetch, sub_8389F690(reader r3, output descriptor r4, count r5), reached via
+// sub_838739D0 from SndPlayer (0x83876964 main read, 0x8387694C skip loop). The reader is the
+// stream object at segment+8 (= player+424). Buffered mode (reader+55 != 0): the codec callback
+// (reader+24) decodes into the reader's own buffer (descriptor at reader + reader+44), then
+// sub_83A54838 copies float32 samples into the output (0x8389F730 leftovers, 0x8389F88C new).
+// Direct mode: the callback writes the output itself (0x8389F984). Descriptor: +4 data, +12
+// start index, +14 stride (samples per channel).
+struct FetchCopy {
+  uint32_t dst, src, bytes;
+  float src_s[128];  // the samples as read from src (first 128)
+};
+struct FetchCb {
+  uint32_t fn, desc, count;
+  int32_t ret;
+};
+struct ProbeFetch {
+  uint32_t magic;  // 'XPFE'
+  uint32_t thread;
+  double t_ms;
+  uint64_t ac_frame;
+  uint32_t reader, out_desc, count;
+  int32_t ret;                // samples produced (r27 at exit)
+  uint32_t player, snd_pos;   // filled at the SndPlayer exit that follows on this thread
+  uint32_t slot_idx;          // player+478 (ring read index) at that exit
+  uint32_t ncopy, ncb, flags; // flags: 1 = player+424 != reader, 2 = more than 4 copies/callbacks
+  uint8_t reader_bytes[64];   // reader +0..+63 at entry (+24 codec, +32 position, +44, +48, +50, +53..+55)
+  uint8_t entry_bytes[32];    // current chunk entry: reader + reader+40 + 32 * reader+53
+  uint8_t int_desc[16];       // reader's internal buffer descriptor (reader + reader+44)
+  uint8_t out_desc_bytes[16];
+  uint8_t slot[16];           // player+112+16*slot_idx
+  FetchCopy copies[4];
+  FetchCb cbs[4];
+  float out[256];             // output channel 0, samples 0..255, at exit
+  std::atomic<uint32_t> ready;
+};
+// XMA output-ring read in the direct-mode codec sub_83870960 (the zoom loud layer's path): the
+// hardware write/read offsets, the valid flag, the game's read position and the decision it took
+// (0x83870AA4-0x83870B04: available == 0 && !XMAIsOutputBufferValid -> treat the ring as full),
+// the 16-bit ring bytes it then converts (sub_8386BF70 at 0x83870C14) and the floats it wrote.
+// Taken only while a fetch record is open (same window/position gate), linked to it by index.
+struct ProbeXma {
+  uint32_t magic;  // 'XPXM'
+  uint32_t thread;
+  double t_ms;
+  uint64_t ac_frame;
+  int32_t fetch_idx;              // the ProbeFetch record of this call (player, position)
+  uint32_t reader, entry, xctx;   // r28, r31 (32-byte entry), XMA context data (W(W(entry)))
+  uint32_t hw_write, hw_read;     // XMAGetOutputBufferWriteOffset (x256 bytes) / ReadOffset
+  uint32_t game_pos;              // entry+16: the game's read position in the ring (bytes)
+  int32_t avail_raw, valid, avail_final;  // valid = -1 when not queried (only queried at 0)
+  uint32_t starved;               // 1 = took the not-enough-data path (0x83870C78)
+  uint32_t count, wrap_count;     // samples before / after the ring wraps (r9 / r10)
+  uint32_t ring, dst0, nch;       // ring base (r6), channel-0 destination (r4), channels (+28)
+  uint8_t entry_bytes[32];
+  uint8_t ctx_bytes[64];          // guest XMA context data as the emulator stored it
+  uint8_t src[512];               // ring bytes from game_pos, wrapping at 6144 (big-endian s16)
+  float out[256];                 // channel-0 output after the read
+  int32_t life;                   // ao2dc_xma_lifetime record seq of this context, -1 = unknown
+  std::atomic<uint32_t> ready;
+};
+constexpr int kProbeSnd = 12000, kProbePlay = 2000, kProbeXas = 40000, kProbeFetch = 16000, kProbeXma = 16000;
+ProbeSnd* probe_snd = nullptr;
+ProbePlay* probe_play = nullptr;
+ProbeXas* probe_xas = nullptr;
+ProbeFetch* probe_fetch = nullptr;
+ProbeXma* probe_xma = nullptr;
+std::atomic<int> probe_snd_n{0}, probe_play_n{0}, probe_xas_n{0}, probe_fetch_n{0}, probe_xma_n{0};
+thread_local int tl_xma = -1;  // XMA record in progress (between write-offset query and read)
+thread_local int tl_fetch = -1;       // record of the fetch call in progress
+thread_local int tl_fetch_pend[8];    // finished fetches waiting for the SndPlayer exit
+thread_local int tl_fetch_pend_n = 0;
+thread_local ProbeBlock tl_pb[4];
+thread_local int tl_pb_n = 0, tl_pb_drop = 0;
+thread_local uint32_t tl_pb_in = 0, tl_pb_out = 0;
+
+// Set (release) once the buffers exist, at the first zoom request; until then every hook sees false.
+std::atomic<bool> probe_ready{false};
+bool ProbeOn() { return probe_ready.load(std::memory_order_acquire); }
+bool Guest(uint32_t a, uint32_t len) { return a >= 0x40000000u && uint64_t(a) + len <= 0xA0000000ull; }
+
+template <typename T>
+void ProbeAppend(FILE* f, T* recs, std::atomic<int>& n, int cap, int& written) {
+  const int end = std::min(n.load(std::memory_order_acquire), cap);
+  while (written < end && recs[written].ready.load(std::memory_order_acquire)) {
+    std::fwrite(&recs[written], sizeof(T), 1, f);
+    ++written;
+  }
+}
+
+void ProbeWriter() {
+  FILE* fs = std::fopen("logs/xas_probe_snd.bin", "wb");
+  FILE* fp = std::fopen("logs/xas_probe_play.bin", "wb");
+  FILE* fx = std::fopen("logs/xas_probe_xas.bin", "wb");
+  FILE* ff = std::fopen("logs/xas_probe_fetch.bin", "wb");
+  FILE* fm = std::fopen("logs/xas_probe_xma.bin", "wb");
+  if (FILE* fj = std::fopen("logs/xas_probe.json", "w")) {
+    std::fprintf(fj,
+                 "{\"snd_record\":%zu,\"play_record\":%zu,\"xas_record\":%zu,\"fetch_record\":%zu,"
+                 "\"xma_record\":%zu,\"snd_cap\":%d,\"play_cap\":%d,\"xas_cap\":%d,\"fetch_cap\":%d,"
+                 "\"xma_cap\":%d}\n",
+                 sizeof(ProbeSnd), sizeof(ProbePlay), sizeof(ProbeXas), sizeof(ProbeFetch),
+                 sizeof(ProbeXma), kProbeSnd, kProbePlay, kProbeXas, kProbeFetch, kProbeXma);
+    std::fclose(fj);
+  }
+  if (!fs || !fp || !fx || !ff || !fm) return;
+  int ws = 0, wp = 0, wx = 0, wf = 0, wm = 0;
+  bool full_logged = false;
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    ProbeAppend(fs, probe_snd, probe_snd_n, kProbeSnd, ws);
+    ProbeAppend(fp, probe_play, probe_play_n, kProbePlay, wp);
+    ProbeAppend(fx, probe_xas, probe_xas_n, kProbeXas, wx);
+    ProbeAppend(ff, probe_fetch, probe_fetch_n, kProbeFetch, wf);
+    ProbeAppend(fm, probe_xma, probe_xma_n, kProbeXma, wm);
+    std::fflush(fs);
+    std::fflush(fp);
+    std::fflush(fx);
+    std::fflush(ff);
+    std::fflush(fm);
+    if (!full_logged && probe_snd_n.load() >= kProbeSnd) {
+      REXLOG_INFO("AO2DC xas probe: SndPlayer buffer full ({} records); later calls not recorded", kProbeSnd);
+      full_logged = true;
+    }
+  }
+}
+
+// Nothing reads ao2dc_xas_probe before the first zoom request: Run 8 stalled loading Basic
+// Training with it on (twice with buffers and writer started at boot, once with only a startup log
+// line, file deletes and a per-call flag check), so the probe-on game is now the probe-off game
+// until then. The writer truncates the files when it starts (--check prints their time).
+
+// First zoom request (game thread, before the window opens): allocate, start the writer, publish.
+void ProbeAllocate() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    if (!REXCVAR_GET(ao2dc_xas_probe) || !REXCVAR_GET(ao2dc_ping_capture)) return;
+    probe_snd = new ProbeSnd[kProbeSnd]();
+    probe_play = new ProbePlay[kProbePlay]();
+    probe_xas = new ProbeXas[kProbeXas]();
+    probe_fetch = new ProbeFetch[kProbeFetch]();
+    probe_xma = new ProbeXma[kProbeXma]();
+    std::thread(ProbeWriter).detach();
+    probe_ready.store(true, std::memory_order_release);
+    REXLOG_INFO("AO2DC xas probe ACTIVE: per-play EA-XAS decoder input, 700 ms after each zoom request, "
+                "position < 4500, {} SndPlayer / {} play records max ({} / {} bytes each), "
+                "logs/xas_probe_snd.bin + logs/xas_probe_play.bin",
+                kProbeSnd, kProbePlay, sizeof(ProbeSnd), sizeof(ProbePlay));
+  });
+}
+
+// One zoom play (from ZoomVoice): the voice, its variant and every node of the patch instance.
+void ProbePlayStart(uint32_t patch, uint32_t voice, double f30, double f31) {
+  if (!ProbeOn()) return;
+  const int i = probe_play_n.fetch_add(1, std::memory_order_relaxed);
+  if (i >= kProbePlay) return;
+  ProbePlay& p = probe_play[i];
+  p.magic = 0x4C505058u;
+  p.patch = patch;
+  p.t_ms = Ms();
+  p.ac_frame = Ao2dcAcFrame();
+  p.voice = voice;
+  const bool vok = Ok(voice, 68);
+  p.entry = vok ? W(voice + 48) : 0;
+  p.wave = vok ? W(voice + 40) : 0;
+  p.count = vok ? float(Fv(voice + 64)) : 0.0f;
+  p.gain_f30 = float(f30);
+  p.gain_f31 = float(f31);
+  // These pointers can lead to unmapped pages (run 7 crashed reading plugin+20 at 0x46BB8000), so
+  // every read is checked for committed memory, as Plugins() does. Once per zoom play, not per call.
+  const uint32_t table = Ok(patch + 232) ? W(patch + 232) : 0;
+  uint32_t n = 0;
+  for (uint32_t slot = 0; Ok(table, 24 * 24) && slot < 24 && n < 8; ++slot) {
+    const uint32_t node = W(table + 24 * slot + 4);
+    if (!Ok(node, 128)) continue;
+    ProbePlayNode& e = p.nodes[n++];
+    e.node = node;
+    e.player = node + 0x90;
+    for (uint32_t k = 0, m = 0; k < 10 && m < 6; ++k) {
+      const uint32_t pl = W(node + 80 + 4 * k);
+      if (!Ok(pl, 64)) continue;
+      e.desc[m] = W(pl + 20);
+      e.p52[m] = float(Fv(pl + 52));
+      ++m;
+    }
+  }
+  p.nnodes = n;
+  p.ready.store(1, std::memory_order_release);
 }
 
 // Host input at the moment of a record: right mouse button and pad 0's left trigger (the zoom
@@ -275,7 +541,7 @@ std::string ZoomState(uint32_t patch) {
   if (Heap(table) && Ok(table, 120)) {
     for (uint32_t v = 0; v < 5; ++v) {
       const uint32_t rec = W(table + 24 * v + 8);
-      const uint32_t n = pmem[table + 24 * v + 20];
+      const uint32_t n = *Host(table + 24 * v + 20);
       recs += fmt::format("{}{{\"voice\":{},\"rec\":\"{:08X}\",\"n\":{},\"words\":{}}}", v ? "," : "", v,
                           rec, n, Heap(rec) && n <= 12 ? Hex(rec, int(8 * n)) : std::string("\"\""));
     }
@@ -333,6 +599,7 @@ void ZoomVoice(uint32_t r1, uint32_t def, uint32_t patch, uint32_t voice, double
     last[key] = count_bits;
     id = ++next_id;
   }
+  ProbePlayStart(patch, voice, f30, f31);
   if (!Budget()) return;
   uint64_t pos_bits = uint64_t(W(voice + 16)) << 32 | W(voice + 20);
   uint64_t len_bits = uint64_t(W(voice + 24)) << 32 | W(voice + 28);
@@ -401,6 +668,7 @@ void Init() {
 // sub_82FF7D80 (weapon+468 zoom level changed against owner+684); site "B" = 0x83074094 in
 // sub_83073FC0 (a weapon component's zoom flag changed against owner+160).
 void ZoomSet(const char* site, uint32_t r1, uint32_t snd, uint32_t value, uint32_t owner, uint32_t other) {
+  ProbeAllocate();  // buffers exist before the window opens
   sp_until_ms.store(Ms() + 700.0, std::memory_order_relaxed);
   Ao2dcCentreRequest(300000000ull);  // capture window = request -200 ms .. +500 ms
   if (!Budget()) return;
@@ -452,7 +720,7 @@ void Ao2dcPingFoley(PPCRegister& r1, PPCRegister& r3) {
                    "\"flags\":\"{:02X} {:02X}\",\"snd_words\":{},\"foley_words\":{},\"stack\":{}}}",
                    Head("foley"), s, W(s + 0x30), W(s + 0x34),
                    !foley ? "none (no foley sound)" : W(s + 0x34) ? "ZoomIn" : "ZoomOut", foley,
-                   pmem[s + 0x3C], pmem[s + 0x3D], Hex(s, 20), Heap(foley) ? Hex(foley, 32) : std::string("\"\""),
+                   *Host(s + 0x3C), *Host(s + 0x3D), Hex(s, 20), Heap(foley) ? Hex(foley, 32) : std::string("\"\""),
                    GuestStack(r1.u32)));
 }
 
@@ -549,7 +817,7 @@ void Ao2dcPingStage(uint32_t r1, uint32_t patch, uint32_t ref, uint32_t index, d
   Init();
   // Every staged parameter write to a zoom foley patch instance (ref = kind, voice, plugin).
   if (IsZoomPatch(patch) && Budget()) {
-    const uint8_t* zr = Ok(ref, 4) ? pmem + ref : nullptr;
+    const uint8_t* zr = Ok(ref, 4) ? Host(ref) : nullptr;
     Emit(fmt::format("{{\"type\":\"zstage\",\"t_ms\":{:.1f},\"ac_frame\":{},\"thread\":{},\"patch\":\"{:08X}\","
                      "\"ref\":\"{:02X} {:02X} {:02X} {:02X}\",\"index\":{},\"value\":{:.6g}}}",
                      Ms(), Ao2dcAcFrame(), GetCurrentThreadId(), patch, zr ? zr[0] : 0, zr ? zr[1] : 0,
@@ -562,7 +830,7 @@ void Ao2dcPingStage(uint32_t r1, uint32_t patch, uint32_t ref, uint32_t index, d
     std::lock_guard<std::mutex> lock(m);
     if (seen.size() > 20000 || !seen.insert(key).second) return;
   }
-  const uint8_t* rf = Ok(ref, 4) ? pmem + ref : nullptr;
+  const uint8_t* rf = Ok(ref, 4) ? Host(ref) : nullptr;
   Emit(fmt::format(
       "{{\"type\":\"stage\",\"t_ms\":{:.1f},\"ac_frame\":{},\"thread\":{},\"patch\":\"{:08X}\","
       "\"ref\":\"{:02X} {:02X} {:02X}\",\"index\":{},\"value\":{:.6g},\"stack\":{}}}",
@@ -598,7 +866,7 @@ void Ao2dcPingXas(uint32_t in, uint32_t out) {
   if (tl_xas_n >= 8 || !Ok(in, 76) || !Ok(out, 512)) return;
   XasBlock& b = tl_xas[tl_xas_n++];
   b.in = in;
-  std::memcpy(b.bytes, pmem + in, 76);
+  std::memcpy(b.bytes, Host(in), 76);
   b.peak = 0;
   for (int i = 0; i < 128; ++i) {
     const float v = float(Fv(out + 4 * i));
@@ -607,16 +875,277 @@ void Ao2dcPingXas(uint32_t in, uint32_t out) {
   }
 }
 
+// ao2dc_xas_probe, decoder entry (r4 = input block, r5 = output): keep the input as consumed.
+void Ao2dcProbeXasIn(uint32_t in, uint32_t out) {
+  tl_pb_in = 0;
+  if (!ProbeOn() || Ms() > sp_until_ms.load(std::memory_order_relaxed)) return;
+  // The decoder reads its input from the physical range (0xEE......; run 7 retest recorded no
+  // block because this check stopped at 0xA0000000). It has just been handed these buffers, so
+  // only reject null and wrap-around.
+  if (in < 0x1000u || out < 0x1000u || uint64_t(in) + 76 > 0x100000000ull ||
+      uint64_t(out) + 512 > 0x100000000ull)
+    return;
+  if (tl_pb_n >= 4) {
+    ++tl_pb_drop;
+    tl_pb_n = 3;  // keep the slot to fill so the standalone record still gets this block
+  }
+  ProbeBlock& b = tl_pb[tl_pb_n];
+  b.in_addr = in;
+  b.out_addr = out;
+  std::memcpy(b.in, Host(in), 76);
+  tl_pb_in = in;
+  tl_pb_out = out;
+}
+
+// ao2dc_xas_probe, decoder exit: the 128 samples it wrote.
+void Ao2dcProbeXasOut() {
+  if (!tl_pb_in) return;
+  ProbeBlock& b = tl_pb[tl_pb_n++];
+  for (int i = 0; i < 128; ++i) b.out[i] = float(Fv(tl_pb_out + 4 * i));
+  tl_pb_in = 0;
+  const int j = probe_xas_n.fetch_add(1, std::memory_order_relaxed);
+  if (j < kProbeXas) {
+    ProbeXas& x = probe_xas[j];
+    x.magic = 0x41585058u;
+    x.thread = GetCurrentThreadId();
+    x.t_ms = Ms();
+    x.ac_frame = Ao2dcAcFrame();
+    x.block = b;
+    x.ready.store(1, std::memory_order_release);
+  }
+}
+
+// ---- SndPlayer sample-fetch trace (ao2dc_xas_probe), sub_8389F690. Only near the start of a
+// stream (reader position < 4600) inside a zoom window; copies into a fixed array, no file I/O.
+float Fbits(uint32_t a) {
+  float f;
+  const uint32_t b = W(a);
+  std::memcpy(&f, &b, 4);
+  return f;
+}
+
+void Ao2dcFetchEnter(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
+  tl_fetch = -1;
+  if (!ProbeOn() || !probe_fetch || Ms() > sp_until_ms.load(std::memory_order_relaxed)) return;
+  const uint32_t rd = r3.u32;
+  if (!Ok(rd, 64) || W(rd + 32) >= 4600u) return;
+  const int i = probe_fetch_n.fetch_add(1, std::memory_order_relaxed);
+  if (i >= kProbeFetch) return;
+  ProbeFetch& f = probe_fetch[i];
+  f.magic = 0x45465058u;
+  f.thread = GetCurrentThreadId();
+  f.t_ms = Ms();
+  f.ac_frame = Ao2dcAcFrame();
+  f.reader = rd;
+  f.out_desc = r4.u32;
+  f.count = r5.u32;
+  std::memcpy(f.reader_bytes, Host(rd), 64);
+  const uint32_t entry = rd + W(rd + 40) + 32u * *Host(rd + 53);
+  if (Ok(entry, 32)) std::memcpy(f.entry_bytes, Host(entry), 32);
+  const uint32_t idesc = rd + W(rd + 44);
+  if (Ok(idesc, 16)) std::memcpy(f.int_desc, Host(idesc), 16);
+  if (Ok(r4.u32, 16)) std::memcpy(f.out_desc_bytes, Host(r4.u32), 16);
+  tl_fetch = i;
+}
+
+// 0x8389F730 / 0x8389F88C: memcpy(dst r3, src r4, bytes r5) of float32 samples into the output.
+void Ao2dcFetchCopy(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
+  if (tl_fetch < 0) return;
+  ProbeFetch& f = probe_fetch[tl_fetch];
+  if (f.ncopy >= 4) {
+    f.flags |= 2;
+    return;
+  }
+  FetchCopy& c = f.copies[f.ncopy++];
+  c.dst = r3.u32;
+  c.src = r4.u32;
+  c.bytes = r5.u32;
+  const uint32_t n = std::min<uint32_t>(r5.u32 / 4, 128);
+  if (Ok(r4.u32, 4 * n))
+    for (uint32_t k = 0; k < n; ++k) c.src_s[k] = Fbits(r4.u32 + 4 * k);
+}
+
+// 0x8389F80C / 0x8389F984: codec callback (reader+24) about to run (r3 reader, r4 descriptor, r5 count).
+void Ao2dcFetchCbPre(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
+  if (tl_fetch < 0) return;
+  ProbeFetch& f = probe_fetch[tl_fetch];
+  if (f.ncb >= 4) {
+    f.flags |= 2;
+    return;
+  }
+  FetchCb& c = f.cbs[f.ncb];
+  c.fn = W(r3.u32 + 24);
+  c.desc = r4.u32;
+  c.count = r5.u32;
+  c.ret = -1;
+}
+
+// 0x8389F810 / 0x8389F988: the callback returned r3 samples.
+void Ao2dcFetchCbPost(PPCRegister& r3) {
+  if (tl_fetch < 0) return;
+  ProbeFetch& f = probe_fetch[tl_fetch];
+  if (f.ncb < 4) f.cbs[f.ncb++].ret = int32_t(r3.u32);
+}
+
+// 0x8389F924 / 0x8389FA00: returns r27 samples; keep output channel 0 as written.
+void XmaClose();
+void Ao2dcFetchExit(PPCRegister& r27) {
+  XmaClose();
+  if (tl_fetch < 0) return;
+  ProbeFetch& f = probe_fetch[tl_fetch];
+  f.ret = int32_t(r27.u32);
+  const uint32_t data = Ok(f.out_desc, 16) ? W(f.out_desc + 4) : 0;
+  if (Ok(data, 1024))
+    for (int k = 0; k < 256; ++k) f.out[k] = Fbits(data + 4 * k);
+  if (tl_fetch_pend_n < 8) tl_fetch_pend[tl_fetch_pend_n++] = tl_fetch;
+  else f.ready.store(1, std::memory_order_release);  // no player identity, but keep it
+  tl_fetch = -1;
+}
+
+// ---- XMA ring read in sub_83870960 (only inside an open fetch record).
+void XmaClose() {  // finish the record in progress; the writer appends strictly in order
+  if (tl_xma < 0) return;
+  probe_xma[tl_xma].ready.store(1, std::memory_order_release);
+  tl_xma = -1;
+}
+
+// 0x83870AB8, after XMAGetOutputBufferWriteOffset: r3 = write offset (x256 bytes).
+void Ao2dcXmaWrite(PPCRegister& r3, PPCRegister& r28, PPCRegister& r31) {
+  XmaClose();
+  if (tl_fetch < 0 || !probe_xma) return;
+  const int i = probe_xma_n.fetch_add(1, std::memory_order_relaxed);
+  if (i >= kProbeXma) return;
+  ProbeXma& m = probe_xma[i];
+  m.magic = 0x4D585058u;
+  m.thread = GetCurrentThreadId();
+  m.t_ms = Ms();
+  m.ac_frame = Ao2dcAcFrame();
+  m.fetch_idx = tl_fetch;
+  m.reader = r28.u32;
+  m.entry = r31.u32;
+  m.hw_write = r3.u32;
+  m.valid = -1;
+  m.life = -1;
+  if (Ok(r31.u32, 32)) {
+    std::memcpy(m.entry_bytes, Host(r31.u32), 32);
+    m.game_pos = W(r31.u32 + 16);
+    const uint32_t h = W(r31.u32);
+    m.xctx = Ok(h, 4) ? W(h) : 0;
+    if (Ok(m.xctx, 64)) std::memcpy(m.ctx_bytes, Host(m.xctx), 64);
+  }
+  tl_xma = i;
+}
+
+// 0x83870AD0, after XMAGetOutputBufferReadOffset: r3 = hardware read offset, r30 = available.
+void Ao2dcXmaRead(PPCRegister& r3, PPCRegister& r30) {
+  if (tl_xma < 0) return;
+  probe_xma[tl_xma].hw_read = r3.u32;
+  probe_xma[tl_xma].avail_raw = int32_t(r30.u32);
+}
+
+// 0x83870AFC, after XMAIsOutputBufferValid (only reached when available == 0).
+void Ao2dcXmaValid(PPCRegister& r3) {
+  if (tl_xma >= 0) probe_xma[tl_xma].valid = int32_t(r3.u32);
+}
+
+// 0x83870B08: r30 = available after the decision (+6144 means "ring full").
+void Ao2dcXmaDecided(PPCRegister& r30) {
+  if (tl_xma >= 0) probe_xma[tl_xma].avail_final = int32_t(r30.u32);
+}
+
+// 0x83870C14, before sub_8386BF70 converts ring samples: r4 = channel-0 destination, r6 = ring,
+// r9 / r10 = samples before / after the wrap, r31 = entry.
+void Ao2dcXmaPre(PPCRegister& r4, PPCRegister& r6, PPCRegister& r9, PPCRegister& r10, PPCRegister& r31) {
+  if (tl_xma < 0) return;
+  ProbeXma& m = probe_xma[tl_xma];
+  m.count = r9.u32;
+  m.wrap_count = r10.u32;
+  m.ring = r6.u32;
+  m.dst0 = r4.u32;
+  m.nch = *Host(r31.u32 + 28);
+  const uint32_t pos = W(r31.u32 + 16) % 6144u;
+  m.life = rex::audio::ao2dc_life::Ao2dcLifeGameRead(m.xctx, W(r31.u32 + 16),
+                                                     (m.count + m.wrap_count) * 2u * std::max(m.nch, 1u),
+                                                     m.hw_write, m.valid, m.t_ms);
+  if (OkPhys(r6.u32, 6144))
+    for (uint32_t k = 0; k < 512; ++k) m.src[k] = *Host(r6.u32 + (pos + k) % 6144u);
+}
+
+// 0x83870C18, after the conversion: the floats it wrote to channel 0.
+void Ao2dcXmaPost() {
+  if (tl_xma < 0) return;
+  ProbeXma& m = probe_xma[tl_xma];
+  if (Ok(m.dst0, 1024))
+    for (int k = 0; k < 256; ++k) m.out[k] = Fbits(m.dst0 + 4 * k);
+  XmaClose();
+}
+
+// 0x83870C78: not enough data in the ring this pass (no read).
+void Ao2dcXmaStarve() {
+  if (tl_xma < 0) return;
+  probe_xma[tl_xma].starved = 1;
+  XmaClose();
+}
+
+// SndPlayer exit on this thread: stamp the fetches it made with the player, position and slot.
+void ProbeFetchFinish(uint32_t player) {
+  for (int k = 0; k < tl_fetch_pend_n; ++k) {
+    ProbeFetch& f = probe_fetch[tl_fetch_pend[k]];
+    if (Guest(player, 0x1E0)) {
+      f.player = player;
+      f.snd_pos = W(player + 0x1B4);
+      f.slot_idx = *Host(player + 478);
+      std::memcpy(f.slot, Host(player + 112 + 16 * (f.slot_idx % 20)), 16);
+      // player+424 is cleared before SndPlayer returns; the reader is the segment's +8.
+      const uint32_t seg = player + rex::memory::load_and_swap<uint16_t>(Host(player + 0x1D4)) +
+                           48 * *Host(player + 0x1D9);
+      if (!Ok(seg, 12) || W(seg + 8) != f.reader) f.flags |= 1;
+    }
+    f.ready.store(1, std::memory_order_release);
+  }
+  tl_fetch_pend_n = 0;
+}
+
+// ao2dc_xas_probe, SndPlayer exit: one record per call at play start, with the blocks it decoded.
+void ProbeSndRecord(uint32_t player, int exit_id) {
+  if (tl_fetch_pend_n) ProbeFetchFinish(player);
+  const int nb = tl_pb_n, drop = tl_pb_drop;
+  tl_pb_n = tl_pb_drop = 0;
+  if (!ProbeOn() || Ms() > sp_until_ms.load(std::memory_order_relaxed)) return;
+  if (!Guest(player, 0x1E0) || W(player + 0x1B4) >= 4500u) return;
+  const int i = probe_snd_n.fetch_add(1, std::memory_order_relaxed);
+  if (i >= kProbeSnd) return;
+  ProbeSnd& r = probe_snd[i];
+  r.magic = 0x4E535058u;
+  r.player = player;
+  r.t_ms = Ms();
+  r.ac_frame = Ao2dcAcFrame();
+  r.thread = GetCurrentThreadId();
+  r.exit_id = exit_id;
+  r.pos = W(player + 0x1B4);
+  const uint32_t idx = *Host(player + 0x1D9);
+  r.seg = player + rex::memory::load_and_swap<uint16_t>(Host(player + 0x1D4)) + 48 * idx;
+  r.nblocks = uint32_t(nb);
+  r.dropped = uint32_t(drop);
+  std::memcpy(r.state, Host(player + 0x1A0), 64);
+  if (Ok(r.seg, 48)) std::memcpy(r.seg_bytes, Host(r.seg), 48);  // derived pointer: check it
+  std::memcpy(r.slots, Host(player + 0x70), 320);
+  for (int k = 0; k < nb; ++k) r.blocks[k] = tl_pb[k];
+  r.ready.store(1, std::memory_order_release);
+}
+
 void Ao2dcPingSndPlayer(uint32_t player, int exit_id) {
+  ProbeSndRecord(player, exit_id);
   const int nx = tl_xas_n;
   tl_xas_n = 0;
   if (!REXCVAR_GET(ao2dc_ping_capture) || !pmem) return;
+  if (ProbeOn()) return;  // the probe replaces the per-call sndp lines (only once it has started)
   if (Ms() > sp_until_ms.load(std::memory_order_relaxed)) return;
   if (!Ok(player, 0x1E0) || sp_budget.fetch_sub(1, std::memory_order_relaxed) <= 0) return;
-  const uint32_t idx = pmem[player + 0x1D9];
-  const uint32_t seg = player + rex::memory::load_and_swap<uint16_t>(pmem + player + 0x1D4) + 48 * idx;
+  const uint32_t idx = *Host(player + 0x1D9);
+  const uint32_t seg = player + rex::memory::load_and_swap<uint16_t>(Host(player + 0x1D4)) + 48 * idx;
   std::string slots;
-  for (int k = 0; k < 20; ++k) slots += char('0' + std::min<int>(pmem[player + 0x75 + 16 * k], 9));
+  for (int k = 0; k < 20; ++k) slots += char('0' + std::min<int>(*Host(player + 0x75 + 16 * k), 9));
   // At the start of a play (position below 4500 samples): the slot table (20 x 16 bytes at +0x70)
   // and the XAS blocks just decoded for this player.
   std::string extra;

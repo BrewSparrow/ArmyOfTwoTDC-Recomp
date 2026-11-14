@@ -36,6 +36,19 @@ On top of the plain recompilation:
     is replaced with "no occlusion" (`ao2dc_disable_ssao`).
   - Delayed render readbacks no longer overwrite the GPU's newer copy (smoke and other
     half-resolution effects were cut into 32-pixel blocks).
+  - Sun and lens flares respect cover (SDK patch 0011). The game decides flare visibility with
+    GPU occlusion queries, and three things were wrong:
+    - The game's queries begin and end in neighbouring memory blocks. The SDK took that as an
+      error and fell back to "always visible", so flares shone through walls and hills.
+    - On the ROV path the depth test runs in the shader, so the host query counted hidden pixels
+      too. While a query is open, pixels that fail the test are now discarded.
+    - The game's flare test quads sit exactly on the far plane. Host far-plane clipping dropped
+      them on some frames and made the sun rays flicker. Depth is now clamped instead of
+      clipped, for draws inside a query only (`ao2dc_occlusion_no_depth_clip`, on by default).
+
+    Player-verified in Cause and Effect: the rays stay steady facing the sun and disappear
+    behind the hill. `ao2dc_occlusion_log` is an opt-in diagnostic: a summary once a second,
+    and F9 traces the next queries.
 - **Recompiler fixes** - PowerPC memory barriers (`sync`, `lwsync`, `eieio`) are emitted as fences
   instead of nothing, so the compiler cannot reorder the game's lock-free thread handoffs; the
   vector 2^x estimate (`vexptefp`) no longer wraps to huge values for very negative inputs (the
@@ -44,6 +57,14 @@ On top of the plain recompilation:
   hard-clipping when gunfire stacks several copies of a sound, and underruns fade instead of
   clicking. `ao2dc_audio_record` saves the last 90 s of the game's mix and of the device signal
   to `logs/` and enables the XMA diagnostics in the log.
+- **XMA stream starts** - the game marks a new XMA voice's output valid before giving it any
+  input. The SDK's first decode pass found nothing to decode and cleared that flag, so no audio
+  was decoded before the game's first read. The game then took the ring as full and played one lap
+  of whatever an earlier sound had left in it. The aim/zoom foley turned this into a loud burst.
+  `ao2dc_xma_keep_valid` (SDK patch 0009, on by default) keeps the flag set when a pass wrote
+  nothing. Run with `--ao2dc_xma_keep_valid=false` to go back to the old behaviour.
+  Listening tests with diagnostics off: the base disc is player-verified (Shooting Range on two
+  launches, then further into the mission); Title Update 1 is player-verified too.
 - **60 FPS (experimental)** - `ao2dc_frame_rate = 60` in `settings/hardware.toml` (restart
   needed) makes the game's own frame pacer and its tick-based systems run at 60 at normal game
   speed (`src/main_hooks/frame_rate_hook.cpp`). Tested at 60 from the start of the game through
@@ -127,6 +148,8 @@ Put your dump in `assets/` (above) and run **`build_from_dump.bat`**. It checks 
 their SHA-256 hashes, finds the toolchain, recompiles the game and compiles the project. Your dump
 is never modified. **[BUILDING.md](BUILDING.md)** has the prerequisites, exact Windows 11 steps,
 the equivalent manual commands and troubleshooting.
+
+**Setup video:** [Building AO2DC-Recomp from your own dump](https://youtu.be/8CrIisg1oZI?si=zlWD-YZn9HyFYvos)
 
 ## Running
 

@@ -1268,12 +1268,14 @@ void XasWriter() {
   }
 }
 
-void Ao2dcPingXas(uint32_t in, uint32_t out);
-thread_local uint32_t ping_xas_in = 0, ping_xas_out = 0;
+// Per-play decoder-input probe (ao2dc_xas_probe, ping_capture.cpp): buffered in memory and
+// written by a background thread. The old per-call JSON path (Ao2dcPingXas) stays disabled; it
+// wrote the log file from the audio thread and was switched off during a load-stall test.
+void Ao2dcProbeXasIn(uint32_t in, uint32_t out);
+void Ao2dcProbeXasOut();
 
 void Ao2dcXasEntry(PPCRegister& r4, PPCRegister& r5) {
-  // (disabled: load-stall test) ping_xas_in = r4.u32;
-  // (disabled: load-stall test) ping_xas_out = r5.u32;
+  Ao2dcProbeXasIn(r4.u32, r5.u32);
   if (!REXCVAR_GET(ao2dc_xas_capture)) return;
   if (!membase) membase = rex::Runtime::instance()->memory()->TranslateVirtual(0);
   static std::atomic<bool> started{false};
@@ -1294,8 +1296,7 @@ void Ao2dcXasEntry(PPCRegister& r4, PPCRegister& r5) {
 }
 
 void Ao2dcXasExit() {
-  // (disabled: load-stall test) if (ping_xas_in) Ao2dcPingXas(ping_xas_in, ping_xas_out);
-  // (disabled: load-stall test) ping_xas_in = 0;
+  Ao2dcProbeXasOut();
   if (!REXCVAR_GET(ao2dc_xas_capture) || !xas_recs || !xas_in) return;
   const int n = xas_n.fetch_add(1);
   if (n >= kXasMax) return;

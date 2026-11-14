@@ -1,0 +1,423 @@
+--- a/include/rex/graphics/d3d12/command_processor.h
++++ b/include/rex/graphics/d3d12/command_processor.h
+@@ -376,6 +376,11 @@
+   // Returns a buffer for reading GPU data back to the CPU. Assuming
+   // synchronizing immediately after use. Always in COPY_DEST state.
+   ID3D12Resource* RequestReadbackBuffer(uint32_t size);
++  bool Ao2dcDumpEdram(const char* path);  // AO2DC diagnostics (ROV only, blocking)
++ public:
++  // AO2DC: a guest occlusion query is open on the host right now.
++  bool ao2dc_occlusion_query_active() const { return active_occlusion_query_.valid; }
++ private:
+   struct ReadbackBuffer {
+     ID3D12Resource* buffers[2] = {nullptr, nullptr};
+     uint32_t sizes[2] = {0, 0};
+--- a/include/rex/graphics/d3d12/render_target_cache.h
++++ b/include/rex/graphics/d3d12/render_target_cache.h
+@@ -104,6 +104,14 @@
+   static DXGI_FORMAT GetDepthSRVDepthDXGIFormat(xenos::DepthRenderTargetFormat format);
+   static DXGI_FORMAT GetDepthSRVStencilDXGIFormat(xenos::DepthRenderTargetFormat format);
+ 
++  // AO2DC diagnostics: the ROV EDRAM buffer (nullptr on other paths) and its state tracking.
++  ID3D12Resource* ao2dc_rov_edram_buffer() const {
++    return path_ == Path::kPixelShaderInterlock ? edram_buffer_ : nullptr;
++  }
++  void Ao2dcTransitionEdramBuffer(D3D12_RESOURCE_STATES new_state) {
++    TransitionEdramBuffer(new_state);
++  }
++
+  protected:
+   uint32_t GetMaxRenderTargetWidth() const override { return D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION; }
+   uint32_t GetMaxRenderTargetHeight() const override {
+--- a/include/rex/graphics/pipeline/shader/dxbc_translator.h
++++ b/include/rex/graphics/pipeline/shader/dxbc_translator.h
+@@ -236,6 +236,10 @@
+     // taking into account the potential relation with occlusion queries (but
+     // should be safe at least temporarily).
+     kSysFlag_ROVDepthStencilEarlyWrite_Shift,
++    // AO2DC: a host occlusion query is open. A ROV pixel that ends uncovered (failed the
++    // depth / stencil or alpha test) is discarded instead of returning, so the host query
++    // counts only the pixels the Xbox 360 would count.
++    kSysFlag_ROVOcclusionDiscard_Shift,
+ 
+     kSysFlag_Count,
+ 
+@@ -260,6 +264,7 @@
+     kSysFlag_ROVDepthWrite = 1u << kSysFlag_ROVDepthWrite_Shift,
+     kSysFlag_ROVStencilTest = 1u << kSysFlag_ROVStencilTest_Shift,
+     kSysFlag_ROVDepthStencilEarlyWrite = 1u << kSysFlag_ROVDepthStencilEarlyWrite_Shift,
++    kSysFlag_ROVOcclusionDiscard = 1u << kSysFlag_ROVOcclusionDiscard_Shift,
+   };
+   static_assert(kSysFlag_Count <= 32, "Too many flags in the system constants");
+ 
+@@ -726,6 +731,8 @@
+   // unchanged or known that it's safe not to await kills/alphatest/AtoC),
+   // returns from the shader.
+   void ROV_DepthStencilTest();
++  // AO2DC: discards the pixel if covered_src is zero and kSysFlag_ROVOcclusionDiscard is set.
++  void ROV_OcclusionDiscardIfZero(const dxbc::Src& covered_src);
+   // Unpacks a 32bpp or a 64bpp color in packed_temp.packed_temp_components to
+   // color_temp, using 2 temporary VGPRs.
+   void ROV_UnpackColor(uint32_t rt_index, uint32_t packed_temp, uint32_t packed_temp_components,
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -55,6 +55,74 @@
+ REXCVAR_DEFINE_BOOL(ao2dc_disable_ssao, true, "GPU",
+                     "AO2DC: replace the game's screen-space ambient occlusion with none (its "
+                     "emulated result is striped)");
++REXCVAR_DEFINE_BOOL(ao2dc_occlusion_log, false, "GPU/D3D12",
++                    "AO2DC diagnostics: once a second, log the guest occlusion queries (begins, "
++                    "ends with the host sample count per query address, fallbacks and why)");
++namespace rex::kernel::xboxkrnl {
++uint64_t Ao2dcGuestSwapCount();  // xboxkrnl_video.cpp (rexruntime)
++}
++namespace {
++uint64_t ao2dc_cp_swaps = 0;  // swaps the command processor has reached
++// Frames the guest CPU is ahead of the command processor right now.
++int64_t Ao2dcCpLag() {
++  return int64_t(rex::kernel::xboxkrnl::Ao2dcGuestSwapCount()) - int64_t(ao2dc_cp_swaps);
++}
++// ao2dc_occlusion_log: per-second summary, command processor thread only.
++struct Ao2dcOcclAddr {
++  uint32_t ends = 0, fallbacks = 0;
++  uint64_t min = UINT64_MAX, max = 0, last = 0;
++};
++struct Ao2dcOcclStats {
++  uint32_t begins = 0, begin_fail = 0, ends_real = 0;
++  int64_t lag_min = INT64_MAX, lag_max = INT64_MIN;
++  std::map<std::string, uint32_t> fallback;  // reason -> count
++  std::map<uint32_t, Ao2dcOcclAddr> addr;
++  std::chrono::steady_clock::time_point next = std::chrono::steady_clock::now();
++} ao2dc_occl;
++// F9 (with ao2dc_occlusion_log): log the next query ends in detail, with the draws inside each.
++int ao2dc_occl_trace_left = 0;
++bool ao2dc_occl_dumped_low = false, ao2dc_occl_dumped_high = false;
++std::map<uint32_t, uint64_t> ao2dc_occl_max;
++uint32_t ao2dc_occl_low_addr = 0;  // per query address, during one F9 trace
++bool ao2dc_occl_f9_down = false;
++std::vector<std::string> ao2dc_occl_draws;
++void Ao2dcOcclTraceKey() {
++  const bool down = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
++  if (down && !ao2dc_occl_f9_down) {
++    ao2dc_occl_trace_left = 240;
++    ao2dc_occl_dumped_low = ao2dc_occl_dumped_high = false;
++    ao2dc_occl_max.clear();
++    REXGPU_INFO("AO2DC occlusion trace: next 240 query ends");
++  }
++  ao2dc_occl_f9_down = down;
++}
++void Ao2dcOcclFallback(uint32_t addr, const char* why) {
++  ++ao2dc_occl.fallback[why];
++  ++ao2dc_occl.addr[addr].fallbacks;
++}
++void Ao2dcOcclFlush(bool host_available) {
++  const auto now = std::chrono::steady_clock::now();
++  if (now < ao2dc_occl.next) return;
++  ao2dc_occl.next = now + std::chrono::seconds(1);
++  if (!ao2dc_occl.begins && !ao2dc_occl.ends_real && ao2dc_occl.fallback.empty()) return;
++  std::string fb, ad;
++  for (const auto& [why, n] : ao2dc_occl.fallback) fb += fmt::format(" {}={}", why, n);
++  int k = 0;
++  for (const auto& [a, st] : ao2dc_occl.addr) {
++    if (k++ == 12) { ad += " ..."; break; }
++    ad += st.ends ? fmt::format(" {:08X}:n{} min{} max{} last{}{}", a, st.ends, st.min, st.max, st.last,
++                                st.fallbacks ? fmt::format(" fb{}", st.fallbacks) : std::string())
++                  : fmt::format(" {:08X}:fb{}", a, st.fallbacks);
++  }
++  REXGPU_INFO("AO2DC occlusion: host {} | begins {} (failed {}) | ends real {} | CPU ahead {}..{} frames | fallback{} |{}",
++              host_available ? "on" : "OFF", ao2dc_occl.begins, ao2dc_occl.begin_fail,
++              ao2dc_occl.ends_real, ao2dc_occl.lag_min == INT64_MAX ? 0 : ao2dc_occl.lag_min,
++              ao2dc_occl.lag_max == INT64_MIN ? 0 : ao2dc_occl.lag_max, fb.empty() ? " none" : fb, ad);
++  const auto next = ao2dc_occl.next;
++  ao2dc_occl = {};
++  ao2dc_occl.next = next;
++}
++}  // namespace
+ REXCVAR_DEFINE_BOOL(ao2dc_log_memexport, false, "GPU/D3D12",
+                     "AO2DC diagnostics: log the memory-export ranges read back in each Perf interval");
+ REXCVAR_DEFINE_BOOL(ao2dc_invalidate_every_frame, false, "GPU/D3D12",
+@@ -178,7 +246,13 @@
+ 
+ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
+                                                                uint32_t packet, uint32_t count) {
++  const bool ao2dc_log = REXCVAR_GET(ao2dc_occlusion_log);
++  if (ao2dc_log) Ao2dcOcclTraceKey();
+   if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_) {
++    if (ao2dc_log) {
++      Ao2dcOcclFallback(register_file_->values[XE_GPU_REG_RB_SAMPLE_COUNT_ADDR], "host_off");
++      Ao2dcOcclFlush(false);
++    }
+     return CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(reader, packet, count);
+   }
+ 
+@@ -221,25 +295,79 @@
+   if (!is_end) {
+     if (active_occlusion_query_.valid &&
+         active_occlusion_query_.sample_count_address != sample_count_addr) {
++      if (ao2dc_log) {
++        REXGPU_WARN("AO2DC occlusion: begin at {:08X} while {:08X} is active; host queries now OFF",
++                    sample_count_addr, active_occlusion_query_.sample_count_address);
++        ++ao2dc_occl.begin_fail;
++      }
+       DisableHostOcclusionQueries();
+       return write_fallback_result();
+     }
+     if (!BeginGuestOcclusionQuery(sample_count_addr)) {
++      if (ao2dc_log) ++ao2dc_occl.begin_fail;
+       return write_fallback_result();
+     }
++    // AO2DC: the guest's D3D begins a query in one sample-count block and ends it in the next
++    // (0x20 further on). The GPU stores a counter snapshot at each, so the begin block is zeroed
++    // here and the end block gets the host count: end-only and end-minus-begin readers agree.
++    std::memset(sample_counts, 0, sizeof(xenos::xe_gpu_depth_sample_counts));
++    if (ao2dc_log) ++ao2dc_occl.begins;
++    ao2dc_occl_draws.clear();
+     return true;
+   }
+ 
+-  if (!active_occlusion_query_.valid ||
+-      active_occlusion_query_.sample_count_address != sample_count_addr) {
+-    DisableHostOcclusionQueries();
++  // AO2DC: the end block is normally a different address from the begin block (see above), so
++  // an end closes whichever query is active; only an end with none active falls back.
++  if (!active_occlusion_query_.valid) {
++    if (ao2dc_log) {
++      Ao2dcOcclFallback(sample_count_addr, "end_without_begin");
++      Ao2dcOcclFlush(occlusion_query_resources_available_);
++    }
+     return write_fallback_result();
+   }
+ 
+   if (!EndGuestOcclusionQuery(sample_count_addr, sample_counts)) {
++    if (ao2dc_log) {
++      Ao2dcOcclFallback(sample_count_addr, "end_failed");
++      Ao2dcOcclFlush(occlusion_query_resources_available_);
++    }
+     return write_fallback_result();
+   }
+ 
++  if (ao2dc_log) {
++    Ao2dcOcclAddr& st = ao2dc_occl.addr[sample_count_addr];
++    const uint64_t v = sample_counts->ZPass_A;
++    ++st.ends;
++    st.min = std::min(st.min, v);
++    st.max = std::max(st.max, v);
++    st.last = v;
++    ++ao2dc_occl.ends_real;
++    const int64_t lag = Ao2dcCpLag();
++    ao2dc_occl.lag_min = std::min(ao2dc_occl.lag_min, lag);
++    ao2dc_occl.lag_max = std::max(ao2dc_occl.lag_max, lag);
++    if (ao2dc_occl_trace_left > 0) {
++      --ao2dc_occl_trace_left;
++      std::string d;
++      for (const auto& x : ao2dc_occl_draws) d += " " + x;
++      REXGPU_INFO("AO2DC occlusion trace: end {:08X} samples {} cpu_ahead {} draws {}{}",
++                  sample_count_addr, v, lag, ao2dc_occl_draws.size(), d);
++      ao2dc_occl_draws.clear();
++      // Dump the ROV EDRAM once for a low and once for a full sun-query result (the 40x40 quad
++      // counts 1624 when fully visible), to compare the depth the quad was tested against.
++      uint64_t& mx = ao2dc_occl_max[sample_count_addr];
++      mx = std::max(mx, v);
++      const bool low = mx >= 200 && v >= 50 && v * 10 < mx * 6 && !ao2dc_occl_dumped_low;
++      const bool high = mx >= 200 && v * 100 >= mx * 98 && v != 901144 && !ao2dc_occl_dumped_high &&
++                        ao2dc_occl_dumped_low && sample_count_addr == ao2dc_occl_low_addr;
++      if ((low || high) && Ao2dcDumpEdram(low ? "logs/edram_low.bin" : "logs/edram_high.bin")) {
++        (low ? ao2dc_occl_dumped_low : ao2dc_occl_dumped_high) = true;
++        if (low) ao2dc_occl_low_addr = sample_count_addr;
++        REXGPU_INFO("AO2DC occlusion trace: EDRAM dumped to logs/edram_{}.bin at end {:08X} samples {}",
++                    low ? "low" : "high", sample_count_addr, v);
++      }
++    }
++    Ao2dcOcclFlush(true);
++  }
+   return true;
+ }
+ 
+@@ -1947,6 +2075,7 @@
+ 
+ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
+                                       uint32_t frontbuffer_height) {
++  ++ao2dc_cp_swaps;
+   // AO2DC diagnostics: reload all guest memory into the GPU's copy every frame (use with
+   // readback_resolve full, or resolved render targets are lost).
+   if (REXCVAR_GET(ao2dc_invalidate_every_frame)) {
+@@ -2458,6 +2587,28 @@
+   ID3D12Device* device = GetD3D12Provider().GetDevice();
+   const RegisterFile& regs = *register_file_;
+ 
++  if (ao2dc_occl_trace_left > 0 && active_occlusion_query_.valid &&
++      ao2dc_occl_draws.size() < 6) {
++    const Shader* ps = active_pixel_shader();
++    ao2dc_occl_draws.push_back(fmt::format(
++        "[prim {} n{} ps {:016X} vp x{:.1f}+{:.1f} y{:.1f}+{:.1f} z{:.4f}+{:.4f} sc {:08X}-{:08X} "
++        "depthctl {:08X} depth {:08X} surf {:08X} mode {:08X} clip {:08X} c0-3 {}]",
++        uint32_t(primitive_type), index_count, ps ? ps->ucode_data_hash() : 0,
++        regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XSCALE), regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XOFFSET),
++        regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YSCALE), regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YOFFSET),
++        regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_ZSCALE), regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_ZOFFSET),
++        regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL], regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR],
++        regs[XE_GPU_REG_RB_DEPTHCONTROL], regs[XE_GPU_REG_RB_DEPTH_INFO],
++        regs[XE_GPU_REG_RB_SURFACE_INFO], regs[XE_GPU_REG_RB_MODECONTROL],
++        regs[XE_GPU_REG_PA_CL_CLIP_CNTL], [&regs] {
++          // First vertex shader float constants (VS constants start at 0 by default).
++          std::string c;
++          for (uint32_t k = 0; k < 16; ++k)
++            c += fmt::format("{}{:.4g}", k ? "," : "", regs.Get<float>(XE_GPU_REG_SHADER_CONSTANT_000_X + k));
++          return c;
++        }()));
++  }
++
+   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
+   if (edram_mode == xenos::EdramMode::kCopy) {
+     // Special copy handling.
+@@ -4343,6 +4494,11 @@
+       flags |= DxbcShaderTranslator::kSysFlag_ROVDepthStencilEarlyWrite;
+     }
+   }
++  // AO2DC: the ROV path tests depth in the shader, so the host occlusion query would count
++  // every rasterized pixel; while a query is open, pixels failing the tests are discarded.
++  if (edram_rov_used && active_occlusion_query_.valid) {
++    flags |= DxbcShaderTranslator::kSysFlag_ROVOcclusionDiscard;
++  }
+   dirty |= system_constants_.flags != flags;
+   system_constants_.flags = flags;
+ 
+@@ -5577,6 +5733,31 @@
+   return true;
+ }
+ 
++bool D3D12CommandProcessor::Ao2dcDumpEdram(const char* path) {
++  ID3D12Resource* edram = render_target_cache_ ? render_target_cache_->ao2dc_rov_edram_buffer() : nullptr;
++  if (!edram) return false;
++  const uint32_t size = uint32_t(edram->GetDesc().Width);
++  ID3D12Resource* readback = RequestReadbackBuffer(size);
++  if (!readback || !BeginSubmission(true)) return false;
++  render_target_cache_->Ao2dcTransitionEdramBuffer(D3D12_RESOURCE_STATE_COPY_SOURCE);
++  SubmitBarriers();
++  deferred_command_list_.D3DCopyBufferRegion(readback, 0, edram, 0, size);
++  render_target_cache_->Ao2dcTransitionEdramBuffer(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
++  SubmitBarriers();
++  if (!AwaitAllQueueOperationsCompletion()) return false;
++  D3D12_RANGE range = {0, size};
++  void* mapped;
++  if (FAILED(readback->Map(0, &range, &mapped))) return false;
++  bool ok = false;
++  if (FILE* f = std::fopen(path, "wb")) {
++    ok = std::fwrite(mapped, 1, size, f) == size;
++    std::fclose(f);
++  }
++  D3D12_RANGE none = {};
++  readback->Unmap(0, &none);
++  return ok;
++}
++
+ uint64_t D3D12CommandProcessor::NormalizeOcclusionSamples(uint64_t samples) const {
+   if (samples == 0 || !texture_cache_) {
+     return samples;
+--- a/src/graphics/d3d12/pipeline_cache.cpp
++++ b/src/graphics/d3d12/pipeline_cache.cpp
+@@ -52,6 +52,10 @@
+ 
+ REXCVAR_DEFINE_BOOL(d3d12_dxbc_disasm, false, "GPU/D3D12", "Dump DXBC disassembly");
+ 
++REXCVAR_DEFINE_BOOL(ao2dc_occlusion_no_depth_clip, true, "GPU/D3D12",
++                    "AO2DC: no host depth clipping for draws inside a guest occlusion query (flare "
++                    "visibility quads at the far plane); false = clip them as before");
++
+ REXCVAR_DEFINE_BOOL(d3d12_dxbc_disasm_dxilconv, false, "GPU/D3D12",
+                     "Dump DXIL conversion disassembly");
+ 
+@@ -1443,6 +1447,13 @@
+     description_out.fill_mode_wireframe = 1;
+   }
+   description_out.depth_clip = !regs.Get<reg::PA_CL_CLIP_CNTL>().clip_disable;
++  // AO2DC: flare occlusion quads sit exactly on the far plane; host far-plane clipping drops
++  // them whole or in rows from one frame to the next (flickering flares). While an occlusion
++  // query is open, clamp depth instead of clipping it (ao2dc_occlusion_no_depth_clip).
++  if (REXCVAR_GET(ao2dc_occlusion_no_depth_clip) &&
++      command_processor_.ao2dc_occlusion_query_active()) {
++    description_out.depth_clip = 0;
++  }
+   bool depth_stencil_bound_and_used = false;
+   if (!edram_rov_used) {
+     // Depth/stencil. No stencil, always passing depth test and no depth writing
+--- a/src/graphics/pipeline/shader/dxbc_translator_om.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator_om.cpp
+@@ -361,6 +361,18 @@
+   a_.OpEndIf();
+ }
+ 
++void DxbcShaderTranslator::ROV_OcclusionDiscardIfZero(const dxbc::Src& covered_src) {
++  // t.x = flag set ? covered : 1, then discard if zero. Only placed right before the shader
++  // returns for an uncovered pixel, after every depth / stencil write it still had to do.
++  uint32_t t = PushSystemTemp();
++  a_.OpAnd(dxbc::Dest::R(t, 0b0001), LoadFlagsSystemConstant(),
++           dxbc::Src::LU(kSysFlag_ROVOcclusionDiscard));
++  a_.OpMovC(dxbc::Dest::R(t, 0b0001), dxbc::Src::R(t, dxbc::Src::kXXXX), covered_src,
++            dxbc::Src::LU(1));
++  a_.OpDiscard(false, dxbc::Src::R(t, dxbc::Src::kXXXX));
++  PopSystemTemp();
++}
++
+ void DxbcShaderTranslator::ROV_DepthStencilTest() {
+   uint32_t temp = PushSystemTemp();
+   dxbc::Dest temp_x_dest(dxbc::Dest::R(temp, 0b0001));
+@@ -1048,6 +1060,7 @@
+     // End the shader if nothing is covered in the 2x2 quad after early
+     // depth/stencil.
+     // temp.x = free
++    ROV_OcclusionDiscardIfZero(dxbc::Src::R(temp, dxbc::Src::kXXXX));
+     a_.OpRetC(false, dxbc::Src::R(temp, dxbc::Src::kXXXX));
+   }
+ 
+@@ -1803,6 +1816,7 @@
+     // 0:3, but not in 4:7).
+     a_.OpAnd(temp_x_dest, dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kXXXX),
+              dxbc::Src::LU(0b11111111));
++    ROV_OcclusionDiscardIfZero(temp_x_src);
+     a_.OpRetC(false, temp_x_src);
+   } else {
+     dxbc::Src coverage_src(dxbc::Src::R(coverage_temp, coverage_temp_component));
+@@ -1876,7 +1890,13 @@
+     a_.OpAnd(temp_x_dest, dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kXXXX),
+              dxbc::Src::LU(0b1111));
+     // temp.x = free.
++    ROV_OcclusionDiscardIfZero(temp_x_src);
+     a_.OpRetC(false, temp_x_src);
++  } else {
++    // AO2DC: depth-only shaders run to the end; drop uncovered pixels for occlusion queries.
++    a_.OpAnd(temp_x_dest, dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kXXXX),
++             dxbc::Src::LU(0b1111));
++    ROV_OcclusionDiscardIfZero(temp_x_src);
+   }
+ 
+   // Write color values.
+@@ -2729,6 +2749,7 @@
+       a_.OpEndIf();
+       // Discard the pixel if it has failed the test.
+       if (edram_rov_used_) {
++        ROV_OcclusionDiscardIfZero(alpha_test_mask_src);
+         a_.OpRetC(false, alpha_test_mask_src);
+       } else {
+         a_.OpDiscard(false, alpha_test_mask_src);
+--- a/src/kernel/xboxkrnl/xboxkrnl_video.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+@@ -437,6 +437,10 @@
+   return 0;
+ }
+ 
++// AO2DC diagnostics: frames the guest CPU has submitted (read by the GPU plugin's occlusion log).
++std::atomic<uint64_t> ao2dc_guest_swaps{0};
++uint64_t Ao2dcGuestSwapCount() { return ao2dc_guest_swaps.load(std::memory_order_relaxed); }
++
+ void VdSwap_entry(mapped_void buffer_ptr,      // ptr into primary ringbuffer
+                   mapped_void fetch_ptr,       // frontbuffer Direct3D 9 texture header fetch
+                   mapped_void unk2,            // system writeback ptr
+@@ -445,6 +449,7 @@
+                   mapped_u32 frontbuffer_ptr,  // ptr to frontbuffer address
+                   mapped_u32 texture_format_ptr, mapped_u32 color_space_ptr, mapped_u32 width,
+                   mapped_u32 height) {
++  ao2dc_guest_swaps.fetch_add(1, std::memory_order_relaxed);
+   // All of these parameters are REQUIRED.
+   assert(buffer_ptr);
+   assert(fetch_ptr);

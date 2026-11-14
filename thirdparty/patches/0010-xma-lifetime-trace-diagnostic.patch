@@ -1,0 +1,507 @@
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -24,6 +24,7 @@
+ #include <cstring>
+ 
+ #include <rex/audio/xma/context.h>
++#include <rex/audio/xma/ao2dc_life.h>
+ #include <rex/cvar.h>
+ #include <rex/audio/xma/decoder.h>
+ #include <rex/audio/xma/helpers.h>
+@@ -56,6 +57,7 @@
+                     "a stale ring (zoom foley bursts). false restores the old clear-on-empty "
+                     "behaviour as a fallback.");
+ namespace {
++thread_local uint32_t ao2dc_life_written = 0;  // bytes Consume() wrote in this Work() pass
+ // AO2DC diagnostics: decoded XMA frames whose float output reaches near full scale (>= 0.9).
+ // The game's mix had one-shot sounds (footsteps) blasting at full scale; this tells whether the
+ // decoder already outputs them that loud. Summary every 5 seconds, details for the first 40.
+@@ -464,10 +466,13 @@
+   const XMA_CONTEXT_DATA initial_data = data;
+ 
+   if (!data.output_buffer_valid) {
++    ao2dc_life::WorkSkipped(id(), data);
+     return true;
+   }
+ 
+   memory::RingBuffer output_rb = PrepareOutputRingBuffer(&data);
++  const uint32_t ao2dc_w0 = uint32_t(output_rb.write_offset());
++  ao2dc_life_written = 0;
+ 
+   // Consume-only context: no input, just drain remaining subframes.
+   if (data.IsConsumeOnlyContext()) {
+@@ -476,6 +481,7 @@
+     }
+     Consume(&output_rb, &data);
+     data.output_buffer_write_offset = output_rb.write_offset() / kOutputBytesPerBlock;
++    ao2dc_life::Wrote(id(), data, ao2dc_w0, ao2dc_life_written);
+     StoreContextMerged(data, initial_data, context_ptr);
+     return true;
+   }
+@@ -502,6 +508,7 @@
+   }
+ 
+   data.output_buffer_write_offset = output_rb.write_offset() / kOutputBytesPerBlock;
++  ao2dc_life::Wrote(id(), data, ao2dc_w0, ao2dc_life_written);
+ 
+   // read == write means either "nothing written, still empty" or "this pass filled the ring".
+   // Hardware clears valid only when full; games read write == read && !valid as full and consume
+@@ -512,6 +519,7 @@
+     const bool filled = remaining_subframe_blocks_in_output_buffer_ < free_blocks_before;
+     if (!REXCVAR_GET(ao2dc_xma_keep_valid) || filled) {
+       data.output_buffer_valid = 0;
++      ao2dc_life::Valid(id(), ao2dc_life::kSrcWorkClear, 0);
+     }
+   }
+ 
+@@ -555,6 +563,7 @@
+   data->input_buffer_0_valid = 0;
+   data->input_buffer_1_valid = 0;
+   data->output_buffer_valid = 0;
++  ao2dc_life::Valid(id(), ao2dc_life::kSrcClear, 0);
+ 
+   data->input_buffer_read_offset = kBitsPerPacketHeader;
+   data->output_buffer_read_offset = 0;
+@@ -603,6 +612,7 @@
+   assert_true(is_allocated());
+ 
+   set_is_allocated(false);
++  ao2dc_life::Release(id());
+   ResetDecoderState();
+   auto context_ptr = memory()->TranslateVirtual(guest_ptr());
+   std::memset(context_ptr, 0, sizeof(XMA_CONTEXT_DATA));
+@@ -842,6 +852,7 @@
+ 
+   output_rb->Write(raw_frame_.data() + (kOutputBytesPerBlock * raw_frame_read_offset),
+                    subframes_to_write * kOutputBytesPerBlock);
++  ao2dc_life_written += subframes_to_write * kOutputBytesPerBlock;
+ 
+   const int8_t headroom = (current_frame_remaining_subframes_ - subframes_to_write == 0)
+                               ? data->output_buffer_padding
+@@ -1263,3 +1274,5 @@
+ }
+ 
+ }  // namespace rex::audio
++
++#include "ao2dc_xma_life.inc"
+--- a/src/audio/xma_decoder.cpp
++++ b/src/audio/xma_decoder.cpp
+@@ -14,6 +14,7 @@
+ 
+ #include <rex/audio/xma/context.h>
+ #include <rex/audio/xma/decoder.h>
++#include <rex/audio/xma/ao2dc_life.h>
+ #include <rex/cvar.h>
+ #include <rex/dbg.h>
+ #include <rex/logging.h>
+@@ -159,6 +160,7 @@
+   }
+   register_file_[XmaRegister::NextContextIndex] = 1;
+   context_bitmap_.Resize(kContextCount);
++  ao2dc_life::Setup(memory(), context_data_first_ptr_);
+ 
+   worker_running_ = true;
+   work_event_ = rex::thread::Event::CreateAutoResetEvent(false);
+--- a/src/kernel/xboxkrnl/xboxkrnl_audio_xma.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_audio_xma.cpp
+@@ -16,6 +16,7 @@
+ 
+ #include <rex/assert.h>
+ #include <rex/audio/audio_system.h>
++#include <rex/audio/xma/ao2dc_life.h>
+ #include <rex/audio/xma/decoder.h>
+ #include <rex/kernel/xboxkrnl/private.h>
+ #include <rex/logging.h>
+@@ -204,6 +205,7 @@
+       static_cast<audio::AudioSystem*>(REX_KERNEL_STATE()->emulator()->audio_system())
+           ->xma_decoder();
+   xma_decoder->ResetContext(context_ptr.guest_address());
++  audio::ao2dc_life::Init(context_ptr.guest_address(), context);
+ 
+   StoreXmaContextIndexedRegister(REX_KERNEL_STATE(), 0x1A80, context_ptr.guest_address());
+ 
+@@ -312,8 +314,10 @@
+ 
+ u32 XMASetOutputBufferValid_entry(mapped_void context_ptr) {
+   XMA_CONTEXT_DATA context(context_ptr);
++  const uint32_t old_valid = context.output_buffer_valid;
+   context.output_buffer_valid = 1;
+   context.Store(context_ptr);
++  audio::ao2dc_life::SetValid(context_ptr.guest_address(), context, old_valid);
+ 
+   return 0;
+ }
+@@ -325,8 +329,10 @@
+ 
+ u32 XMASetOutputBufferReadOffset_entry(mapped_void context_ptr, u32 value) {
+   XMA_CONTEXT_DATA context(context_ptr);
++  const uint32_t old_offset = context.output_buffer_read_offset;
+   context.output_buffer_read_offset = value;
+   context.Store(context_ptr);
++  audio::ao2dc_life::SetRead(context_ptr.guest_address(), context, old_offset, value);
+ 
+   return 0;
+ }
+--- /dev/null
++++ b/include/rex/audio/xma/ao2dc_life.h
+@@ -0,0 +1,85 @@
++// AO2DC diagnostic: per-lifetime XMA context trace (ao2dc_xma_lifetime, off by default).
++//
++// One fixed-size record per context lifetime (XMAInitializeContext, or a context first seen
++// without one). It holds the output ring, the valid-flag transitions, what the decoder actually
++// wrote to the ring (256-byte block mask, first write) and the game's first read (the first
++// XMASetOutputBufferReadOffset, plus the exact range when the game-side probe reports it).
++// Records live in a fixed in-memory table that is overwritten oldest-first; a background thread
++// rewrites logs/xma_life.bin from it. Nothing here does file I/O on the audio or decoder threads.
++#pragma once
++
++#include <cstdint>
++
++namespace rex::audio::ao2dc_life {
++
++constexpr uint32_t kMagic = 0x46494C58u;  // 'XLIF'
++constexpr int kSlots = 16384;
++constexpr int kValidEvents = 8;
++constexpr int kSamples = 4;  // ring samples at offsets 0, 256, size/2, size*3/4
++constexpr int kSampleBytes = 16;
++
++enum Kind : uint32_t { kInit = 1, kReinitNoRelease = 2, kSeenWithoutInit = 3 };
++enum ValidSrc : uint16_t { kSrcInit = 1, kSrcSetValid = 2, kSrcWorkClear = 3, kSrcClear = 4, kSrcRelease = 5 };
++
++struct ValidEvent {
++  float dt_ms;     // from the lifetime start
++  uint16_t src;    // ValidSrc
++  uint16_t value;  // valid after the event
++};
++
++struct Life {
++  uint32_t magic;
++  uint32_t seq;            // lifetime number since start (slot = seq % kSlots)
++  uint32_t ctx_id, ctx_ptr;
++  uint32_t kind;           // Kind
++  int32_t prev_seq;        // previous lifetime of this context id, -1 if none
++  uint32_t prev_released;  // that lifetime ended with XMAReleaseContext
++  uint32_t ring, ring_bytes, ring_same_as_prev;
++  uint32_t sdc, stereo, released;
++  double t_ms;             // runtime ms (Ao2dcLifeNowMs) at the start
++  uint32_t n_valid, n_setvalid_calls;
++  ValidEvent valid_ev[kValidEvents];
++  uint32_t work_skipped_invalid;  // Work() returned at once because valid == 0, before the first write
++  uint32_t n_writes, bytes_written;
++  uint64_t written_mask;          // 256-byte ring blocks the decoder wrote in this lifetime
++  float first_write_dt;           // -1 = none yet
++  uint32_t first_write_off, first_write_len;
++  // first XMASetOutputBufferReadOffset (the game disables the context before it, so the ring is as read)
++  float setread_dt;               // -1 = none yet
++  uint32_t setread_old, setread_new, setread_hw_write, setread_valid;
++  uint64_t mask_at_setread;
++  // first read reported by the game-side probe (exact byte range), when it was capturing
++  float game_dt;                  // -1 = not reported
++  double game_t_ms;               // the game probe's own clock
++  uint32_t game_pos, game_bytes, game_fresh_bytes, game_hw_write, game_valid;
++  uint64_t mask_at_game;
++  uint32_t game_reads, lap_bytes, lap_fresh_bytes;  // game-reported reads within the first ring lap
++  uint8_t ring_init[kSamples][kSampleBytes];
++  uint8_t ring_read[kSamples][kSampleBytes];  // same offsets at the first SetReadOffset
++  uint32_t end_marker;
++};
++static_assert(sizeof(Life) == 392, "tools/xma_life.py LIFE dtype");
++
++// Game-side probe: the read at 0x83870C14 (bytes = samples x 2 x channels from game_pos).
++// Returns the lifetime seq, or -1 when the trace is off or no lifetime is known.
++int32_t Ao2dcLifeGameRead(uint32_t ctx_ptr, uint32_t game_pos, uint32_t bytes, uint32_t hw_write,
++                          int32_t valid, double game_t_ms);
++double Ao2dcLifeNowMs();
++
++}  // namespace rex::audio::ao2dc_life
++
++namespace rex::memory { class Memory; }
++namespace rex::audio { struct XMA_CONTEXT_DATA; }
++
++// SDK-internal hooks (xma_decoder.cpp, xma_context.cpp, xboxkrnl_audio_xma.cpp). All return at
++// once when the trace is off (a plain bool read).
++namespace rex::audio::ao2dc_life {
++void Setup(memory::Memory* memory, uint32_t context_first_ptr);
++void Init(uint32_t ctx_ptr, const XMA_CONTEXT_DATA& d);
++void SetValid(uint32_t ctx_ptr, const XMA_CONTEXT_DATA& d, uint32_t old_valid);
++void SetRead(uint32_t ctx_ptr, const XMA_CONTEXT_DATA& d, uint32_t old_off, uint32_t new_off);
++void WorkSkipped(uint32_t ctx_id, const XMA_CONTEXT_DATA& d);
++void Wrote(uint32_t ctx_id, const XMA_CONTEXT_DATA& d, uint32_t off, uint32_t len);
++void Valid(uint32_t ctx_id, uint16_t src, uint16_t value);
++void Release(uint32_t ctx_id);
++}  // namespace rex::audio::ao2dc_life
+--- /dev/null
++++ b/src/audio/ao2dc_xma_life.inc
+@@ -0,0 +1,272 @@
++// AO2DC diagnostic: per-lifetime XMA context trace (ao2dc_xma_lifetime, off by default).
++// Included at the end of xma_context.cpp (no build-list change). See rex/audio/xma/ao2dc_life.h.
++
++#include <thread>
++
++#include <rex/audio/xma/ao2dc_life.h>
++
++REXCVAR_DEFINE_BOOL(ao2dc_xma_lifetime, false, "Audio",
++                    "Diagnostic: keep one fixed-size record per XMA context lifetime (init, output "
++                    "ring, valid-flag transitions, decoder writes by 256-byte block, first game "
++                    "read) from startup; a background thread rewrites logs/xma_life.bin. Restart "
++                    "required.");
++
++namespace rex::audio::ao2dc_life {
++namespace {
++constexpr uint32_t kContexts = 320;  // XmaDecoder::kContextCount (private)
++bool on = false;  // set once in Setup (before the decoder thread starts), read without locking
++memory::Memory* mem = nullptr;
++uint32_t first_ptr = 0;
++std::chrono::steady_clock::time_point t0;
++std::mutex m;
++Life* table = nullptr;
++uint32_t next_seq = 0;
++int32_t cur[kContexts];  // current lifetime seq per context id, -1 = none
++std::atomic<uint32_t> version{0};
++
++double NowMs() {
++  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
++}
++float Dt(const Life& l) { return float(NowMs() - l.t_ms); }
++
++int Id(uint32_t ctx_ptr) {
++  if (ctx_ptr < first_ptr) return -1;
++  const uint32_t id = (ctx_ptr - first_ptr) >> 6;
++  return id < kContexts ? int(id) : -1;
++}
++
++// 256-byte ring blocks touched by [off, off + len), wrapping at size.
++uint64_t Blocks(uint32_t off, uint32_t len, uint32_t size) {
++  if (size < 256) return 0;
++  const uint32_t n = size / 256;
++  if (len >= size) return n >= 64 ? ~0ull : (1ull << n) - 1;
++  uint64_t mask = 0;
++  off %= size;
++  while (len) {
++    const uint32_t in_block = std::min(len, 256 - (off % 256));
++    const uint32_t b = off / 256;
++    if (b < 64) mask |= 1ull << b;
++    len -= in_block;
++    off = (off + in_block) % size;
++  }
++  return mask;
++}
++
++// Bytes of [off, off + len) that lie in blocks of mask.
++uint32_t Fresh(uint32_t off, uint32_t len, uint32_t size, uint64_t mask) {
++  if (size < 256) return 0;
++  uint32_t fresh = 0;
++  len = std::min(len, size);
++  off %= size;
++  while (len) {
++    const uint32_t in_block = std::min(len, 256 - (off % 256));
++    const uint32_t b = off / 256;
++    if (b < 64 && (mask >> b & 1)) fresh += in_block;
++    len -= in_block;
++    off = (off + in_block) % size;
++  }
++  return fresh;
++}
++
++void Sample(uint8_t (&dst)[kSamples][kSampleBytes], uint32_t ring, uint32_t size) {
++  if (!ring || size < 1024) return;
++  const uint8_t* p = mem->TranslatePhysical(ring);
++  const uint32_t offs[kSamples] = {0, 256, size / 2, size / 4 * 3};
++  for (int k = 0; k < kSamples; ++k) std::memcpy(dst[k], p + offs[k], kSampleBytes);
++}
++
++void AddValid(Life& l, uint16_t src, uint16_t value) {
++  if (l.n_valid < uint32_t(kValidEvents)) l.valid_ev[l.n_valid] = {Dt(l), src, value};
++  ++l.n_valid;
++}
++
++// Caller holds m. Starts a lifetime for context id from the context data as stored now.
++Life& Begin(int id, uint32_t ctx_ptr, const XMA_CONTEXT_DATA& d, uint32_t kind) {
++  const int32_t prev = cur[id];
++  const Life* p = prev >= 0 ? &table[prev % kSlots] : nullptr;
++  if (p && p->seq != uint32_t(prev)) p = nullptr;  // slot already reused
++  const uint32_t prev_released = p ? p->released : 0;
++  const uint32_t prev_ring = p ? p->ring : 0;
++  const uint32_t seq = next_seq++;
++  Life& l = table[seq % kSlots];
++  std::memset(&l, 0, sizeof(l));
++  l.magic = kMagic;
++  l.seq = seq;
++  l.ctx_id = uint32_t(id);
++  l.ctx_ptr = ctx_ptr;
++  l.prev_seq = prev;
++  l.prev_released = prev_released;
++  l.kind = (kind == kInit && p && !prev_released) ? uint32_t(kReinitNoRelease) : kind;
++  l.ring = d.output_buffer_ptr;
++  l.ring_bytes = d.output_buffer_block_count * 256;
++  l.ring_same_as_prev = p && prev_ring == l.ring;
++  l.sdc = d.subframe_decode_count;
++  l.stereo = d.is_stereo;
++  l.t_ms = NowMs();
++  l.first_write_dt = l.setread_dt = l.game_dt = -1;
++  AddValid(l, kSrcInit, uint16_t(d.output_buffer_valid));
++  Sample(l.ring_init, l.ring, l.ring_bytes);
++  l.end_marker = kMagic;
++  cur[id] = int32_t(seq);
++  return l;
++}
++
++Life* Cur(int id) {  // caller holds m
++  if (id < 0 || cur[id] < 0) return nullptr;
++  Life& l = table[cur[id] % kSlots];
++  return l.seq == uint32_t(cur[id]) && l.ctx_id == uint32_t(id) ? &l : nullptr;
++}
++
++Life& CurOrBegin(int id, uint32_t ctx_ptr, const XMA_CONTEXT_DATA& d) {
++  Life* l = Cur(id);
++  return l ? *l : Begin(id, ctx_ptr, d, kSeenWithoutInit);
++}
++
++void Writer() {
++  std::vector<Life> copy;
++  uint32_t written_version = ~0u;
++  for (;;) {
++    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
++    const uint32_t v = version.load(std::memory_order_relaxed);
++    if (v == written_version) continue;
++    written_version = v;
++    {
++      std::lock_guard<std::mutex> lock(m);
++      copy.assign(table, table + std::min<uint32_t>(next_seq, kSlots));
++    }
++    if (FILE* f = std::fopen("logs/xma_life.bin.tmp", "wb")) {
++      std::fwrite(copy.data(), sizeof(Life), copy.size(), f);
++      std::fclose(f);
++      std::error_code ec;
++      std::filesystem::rename("logs/xma_life.bin.tmp", "logs/xma_life.bin", ec);
++    }
++  }
++}
++}  // namespace
++
++double Ao2dcLifeNowMs() { return on ? NowMs() : -1; }
++
++void Setup(memory::Memory* memory, uint32_t context_first_ptr) {
++  REXLOG_INFO("AO2DC XMA settings: ao2dc_xma_keep_valid={} ao2dc_xma_lifetime={}",
++              REXCVAR_GET(ao2dc_xma_keep_valid), REXCVAR_GET(ao2dc_xma_lifetime));
++  if (!REXCVAR_GET(ao2dc_xma_lifetime)) return;
++  mem = memory;
++  first_ptr = context_first_ptr;
++  t0 = std::chrono::steady_clock::now();
++  table = new Life[kSlots]();
++  for (auto& c : cur) c = -1;
++  std::error_code ec;
++  std::filesystem::create_directories("logs", ec);
++  std::filesystem::remove("logs/xma_life.bin", ec);
++  if (FILE* f = std::fopen("logs/xma_life.json", "w")) {
++    std::fprintf(f, "{\"life_record\":%zu,\"slots\":%d,\"keep_valid\":%s,\"lifetime\":true}\n",
++                 sizeof(Life), kSlots, REXCVAR_GET(ao2dc_xma_keep_valid) ? "true" : "false");
++    std::fclose(f);
++  }
++  std::thread(Writer).detach();
++  on = true;
++  REXLOG_INFO("AO2DC XMA lifetime trace ACTIVE: {} records of {} bytes, logs/xma_life.bin",
++              kSlots, sizeof(Life));
++}
++
++void Init(uint32_t ctx_ptr, const XMA_CONTEXT_DATA& d) {
++  if (!on) return;
++  const int id = Id(ctx_ptr);
++  if (id < 0) return;
++  std::lock_guard<std::mutex> lock(m);
++  Begin(id, ctx_ptr, d, kInit);
++  version.fetch_add(1, std::memory_order_relaxed);
++}
++
++void SetValid(uint32_t ctx_ptr, const XMA_CONTEXT_DATA& d, uint32_t old_valid) {
++  if (!on) return;
++  const int id = Id(ctx_ptr);
++  if (id < 0) return;
++  std::lock_guard<std::mutex> lock(m);
++  Life& l = CurOrBegin(id, ctx_ptr, d);
++  ++l.n_setvalid_calls;
++  if (!old_valid) AddValid(l, kSrcSetValid, 1);
++}
++
++void SetRead(uint32_t ctx_ptr, const XMA_CONTEXT_DATA& d, uint32_t old_off, uint32_t new_off) {
++  if (!on) return;
++  const int id = Id(ctx_ptr);
++  if (id < 0) return;
++  std::lock_guard<std::mutex> lock(m);
++  Life& l = CurOrBegin(id, ctx_ptr, d);
++  if (l.setread_dt >= 0) return;
++  l.setread_dt = Dt(l);
++  l.setread_old = old_off;
++  l.setread_new = new_off;
++  l.setread_hw_write = d.output_buffer_write_offset;
++  l.setread_valid = d.output_buffer_valid;
++  l.mask_at_setread = l.written_mask;
++  Sample(l.ring_read, l.ring, l.ring_bytes);
++  version.fetch_add(1, std::memory_order_relaxed);
++}
++
++void WorkSkipped(uint32_t ctx_id, const XMA_CONTEXT_DATA&) {
++  if (!on || ctx_id >= kContexts) return;
++  std::lock_guard<std::mutex> lock(m);
++  Life* l = Cur(int(ctx_id));
++  if (l && !l->n_writes) ++l->work_skipped_invalid;
++}
++
++void Wrote(uint32_t ctx_id, const XMA_CONTEXT_DATA& d, uint32_t off, uint32_t len) {
++  if (!on || ctx_id >= kContexts || !len) return;
++  std::lock_guard<std::mutex> lock(m);
++  Life& l = CurOrBegin(int(ctx_id), first_ptr + ctx_id * 64, d);
++  if (!l.n_writes) {
++    l.first_write_dt = Dt(l);
++    l.first_write_off = off;
++    l.first_write_len = len;
++  }
++  ++l.n_writes;
++  l.bytes_written += len;
++  l.written_mask |= Blocks(off, len, l.ring_bytes);
++}
++
++void Valid(uint32_t ctx_id, uint16_t src, uint16_t value) {
++  if (!on || ctx_id >= kContexts) return;
++  std::lock_guard<std::mutex> lock(m);
++  if (Life* l = Cur(int(ctx_id))) AddValid(*l, src, value);
++}
++
++void Release(uint32_t ctx_id) {
++  if (!on || ctx_id >= kContexts) return;
++  std::lock_guard<std::mutex> lock(m);
++  if (Life* l = Cur(int(ctx_id))) {
++    AddValid(*l, kSrcRelease, 0);
++    l->released = 1;
++  }
++  version.fetch_add(1, std::memory_order_relaxed);
++}
++
++int32_t Ao2dcLifeGameRead(uint32_t ctx_ptr, uint32_t game_pos, uint32_t bytes, uint32_t hw_write,
++                          int32_t valid, double game_t_ms) {
++  if (!on) return -1;
++  const int id = Id(ctx_ptr);
++  if (id < 0) return -1;
++  std::lock_guard<std::mutex> lock(m);
++  Life* l = Cur(id);
++  if (!l) return -1;
++  if (!l->game_reads) {
++    l->game_dt = Dt(*l);
++    l->game_t_ms = game_t_ms;
++    l->game_pos = game_pos;
++    l->game_bytes = bytes;
++    l->game_fresh_bytes = Fresh(game_pos, bytes, l->ring_bytes, l->written_mask);
++    l->game_hw_write = hw_write;
++    l->game_valid = uint32_t(valid);
++    l->mask_at_game = l->written_mask;
++  }
++  ++l->game_reads;
++  if (l->lap_bytes < l->ring_bytes) {
++    l->lap_bytes += bytes;
++    l->lap_fresh_bytes += Fresh(game_pos, bytes, l->ring_bytes, l->written_mask);
++  }
++  version.fetch_add(1, std::memory_order_relaxed);
++  return int32_t(l->seq);
++}
++
++}  // namespace rex::audio::ao2dc_life

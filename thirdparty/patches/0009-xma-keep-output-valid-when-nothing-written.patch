@@ -1,0 +1,41 @@
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -50,6 +50,11 @@
+ 
+ REXCVAR_DECLARE(bool, ao2dc_audio_record);
+ REXCVAR_DECLARE(bool, ao2dc_xma_mute);
++REXCVAR_DEFINE_BOOL(ao2dc_xma_keep_valid, true, "Audio",
++                    "Keep an XMA context's output buffer valid when a decode pass wrote nothing "
++                    "(read == write, ring still empty). On by default: stops stream starts playing "
++                    "a stale ring (zoom foley bursts). false restores the old clear-on-empty "
++                    "behaviour as a fallback.");
+ namespace {
+ // AO2DC diagnostics: decoded XMA frames whose float output reaches near full scale (>= 0.9).
+ // The game's mix had one-shot sounds (footsteps) blasting at full scale; this tells whether the
+@@ -486,6 +491,7 @@
+     return true;
+   }
+ 
++  const int32_t free_blocks_before = remaining_subframe_blocks_in_output_buffer_;
+   while (remaining_subframe_blocks_in_output_buffer_ >= minimum_subframe_decode_count) {
+     Decode(&data);
+     Consume(&output_rb, &data);
+@@ -497,8 +503,16 @@
+ 
+   data.output_buffer_write_offset = output_rb.write_offset() / kOutputBytesPerBlock;
+ 
++  // read == write means either "nothing written, still empty" or "this pass filled the ring".
++  // Hardware clears valid only when full; games read write == read && !valid as full and consume
++  // the whole ring. Consume() reduces the free-block count by what it wrote, so it tells the two
++  // apart even when a full-ring write lands back on the same offset. (A loop-limit early return
++  // in Consume() lowers the count by the padding alone; that case still clears, as before.)
+   if (output_rb.empty()) {
+-    data.output_buffer_valid = 0;
++    const bool filled = remaining_subframe_blocks_in_output_buffer_ < free_blocks_before;
++    if (!REXCVAR_GET(ao2dc_xma_keep_valid) || filled) {
++      data.output_buffer_valid = 0;
++    }
+   }
+ 
+   StoreContextMerged(data, initial_data, context_ptr);
