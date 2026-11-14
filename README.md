@@ -15,6 +15,10 @@ provides the Xbox 360 kernel, GPU (Direct3D 12), audio and input.
 
 This repository contains **no game code or data**. You need a legally owned copy of the game.
 
+## Windows setup video
+
+[Watch the Army of Two: The Devil's Cartel Windows setup guide on YouTube](https://www.youtube.com/watch?v=8CrIisg1oZI).
+
 ## Project-side additions
 
 On top of the plain recompilation:
