@@ -1,4 +1,4 @@
-# Army of Two: The Devil's Cartel - PC recompilation
+# Army of Two: The Devil's Cartel - PC Recompilation
 
 <p align="center">
   <img src="docs/ArmyofTwo_TheDevilsCartel.jpeg" alt="Army of Two: The Devil's Cartel cover art" width="300">
@@ -69,11 +69,13 @@ On top of the plain recompilation:
   nothing. Run with `--ao2dc_xma_keep_valid=false` to go back to the old behaviour.
   Listening tests with diagnostics off: the base disc is player-verified (Shooting Range on two
   launches, then further into the mission); Title Update 1 is player-verified too.
-- **60 FPS (experimental)** - `ao2dc_frame_rate = 60` in `settings/hardware.toml` (restart
-  needed) makes the game's own frame pacer and its tick-based systems run at 60 at normal game
-  speed (`src/main_hooks/frame_rate_hook.cpp`). Tested at 60 from the start of the game through
-  the Cause and Effect mission; the default `0` keeps the original 30 FPS. Keep
-  `readback_resolve = "fast"` (the default) - `"full"` costs too much at 60 FPS.
+- **60 FPS (experimental)** - off by default (the original 30 FPS). Turn it on in the `F4` window
+  (Display tab, "60 FPS (experimental)") or with `ao2dc_frame_rate = 60` in `settings/hardware.toml`;
+  restart the game afterwards. It runs the game's own frame pacer and its tick-based systems at 60
+  with bounded catch-up (`ao2dc_catch_up_steps`, default 8) so game speed stays normal when the
+  GPU cannot hold 60 (`src/main_hooks/frame_rate_hook.cpp`). It is all or nothing: it only turns on
+  when `video_mode_refresh_rate` is 60 (the default), otherwise the game stays at 30 and the log
+  says why. Keep `readback_resolve = "fast"` (the default) - `"full"` costs too much at 60 FPS.
 - **FPS counter** - "Show FPS counter" in the `F4` window (Display tab).
 - **Kernel fixes** - stale dispatch objects in reused memory (crash on `KeSetEvent`), instant
   storage-device selection.

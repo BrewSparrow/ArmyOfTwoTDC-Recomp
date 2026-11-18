@@ -1,0 +1,20 @@
+diff --git a/src/ui/overlay/settings_overlay.cpp b/src/ui/overlay/settings_overlay.cpp
+index 5689544..0e3f138 100644
+--- a/src/ui/overlay/settings_overlay.cpp
++++ b/src/ui/overlay/settings_overlay.cpp
+@@ -426,6 +426,15 @@ void SettingsDialog::OnDraw(ImGuiIO& /*io*/) {
+         if (ImGui::Checkbox("##vsync", &vsync)) {
+           set("vsync", vsync ? "true" : "false");
+         }
++        bool fps60 = get("ao2dc_frame_rate") == "60";
++        ImGui::Text("60 FPS (experimental) *");
++        ImGui::SameLine(220.0f);
++        if (ImGui::Checkbox("##fps60", &fps60)) {
++          set("ao2dc_frame_rate", fps60 ? "60" : "0");
++        }
++        ImGui::TextColored(kAo2TextDim,
++                           "Off = the original 30 FPS. 60 FPS runs the game logic at 60 Hz; a few "
++                           "scenes may misbehave.");
+         bool show_fps = get("show_fps") == "true";
+         ImGui::Text("Show FPS counter");
+         ImGui::SameLine(220.0f);

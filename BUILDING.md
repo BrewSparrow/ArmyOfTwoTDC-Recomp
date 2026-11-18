@@ -73,7 +73,7 @@ dlc\9DDFDADC8879D83BEE746E3C54945866E095576745
 ## Building
 
 1. Get the source **with the ReXGlue SDK**, either way:
-   - download `AO2DC-Recomp-build-kit.zip` from the GitHub Releases page and extract it. It
+   - download `Ao2TDC-win64.zip` from the GitHub Releases page and extract it. It
      already contains the SDK at the pinned commit. Extract it to a short path outside any other
      git repository, for example `C:\AO2DC-Recomp`; or
    - clone with submodules:

@@ -163,15 +163,19 @@ struct Starter {
     int seconds = 0;
     if (const char* env = std::getenv("AO2DC_SAMPLE_SECONDS"))
       seconds = std::atoi(env);
-    if (seconds <= 0)
+    // AO2DC_SAMPLE_MS: the same sampling at a millisecond period (for profiling).
+    int period_ms = seconds * 1000;
+    if (const char* env = std::getenv("AO2DC_SAMPLE_MS"))
+      period_ms = std::atoi(env);
+    if (period_ms <= 0)
       return;
-    std::thread([seconds] {
+    std::thread([period_ms] {
       BuildMap();
       FILE* file = std::fopen("logs/stacks.txt", "w");
       if (!file)
         return;
       for (int i = 0;; ++i) {
-        Sleep(DWORD(seconds) * 1000);
+        Sleep(DWORD(period_ms));
         SampleAll(file, i);
       }
     }).detach();

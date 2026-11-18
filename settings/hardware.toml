@@ -42,5 +42,5 @@ ao2dc_disable_ssao = true
 # moments (grenades) and clicked; 16 is ~85 ms.
 audio_maxqframes = 16
 
-# Frame rate for the game's frame pacer: 30 (the original) or 60 (experimental).
-ao2dc_frame_rate = 60
+# Frame rate: 0 (the original 30 FPS, default) or 60 (experimental; also in the F4 menu, Display tab).
+ao2dc_frame_rate = 0

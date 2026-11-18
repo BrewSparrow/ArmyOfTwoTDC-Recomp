@@ -1375,9 +1375,29 @@ address = 0x82CB85EC
 name = "Ao2dcFlipInterval"
 registers = ["r29"]
 
-# EA-XAS decoder diagnostics (ao2dc_xas_check, src/main_hooks/xas_check_hook.cpp).
-# sub_8388FE88: 0x8388FE9C is the first input load (r4 = block, r5 = output); 0x83890268 follows
-# the decode loop.
+# Game-time diagnostic (ao2dc_trace_game_time, src/main_hooks/frame_rate_hook.cpp): sub_82F5FBE0
+# at 0x82F5FCB8, the per-step `bl 0x830127c0` player update (r3 = player, r30 = slot counter, f1 = dt).
+[[midasm_hook]]
+address = 0x82F5FCB8
+name = "Ao2dcGameTimeStep"
+registers = ["r3", "r30", "f1"]
+
+# Tick-count producer trace (ao2dc_trace_game_time): the pacer tick sub_82EED420 at loc_82EED8D0,
+# before the clamp to settings+40 ticks per frame (r31 = pacer).
+[[midasm_hook]]
+address = 0x82EED8D0
+name = "Ao2dcTickCount"
+registers = ["r31"]
+
+# Catch-up steps (ao2dc_catch_up_steps, src/main_hooks/frame_rate_hook.cpp): end of the pacer tick
+# sub_82EED420, 0x82EED97C before `lbz r8,58(r9)` (r31 = pacer, r9 = settings, r10 = previous
+# counter); true skips the game's reset of the tick counter to "previous + 1".
+[[midasm_hook]]
+address = 0x82EED97C
+name = "Ao2dcCatchUpSteps"
+registers = ["r31", "r9", "r10"]
+jump_address_on_true = 0x82EED998
+
 [[midasm_hook]]
 address = 0x8389170C
 name = "Ao2dcXasBlockStart"

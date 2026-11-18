@@ -57,6 +57,30 @@ configure_file("${AO2DC_MAIN_HINTS}" "${CMAKE_CURRENT_SOURCE_DIR}/config/ao4_mai
 
 include(generated/rexglue.cmake)
 
+# generated/rexglue.cmake (rewritten by codegen) declares only the entrypoint sources as outputs of
+# the codegen step, so Ninja judged the AO4_Main / Engine_BuildInfo compile steps up to date before
+# codegen rewrote their sources: a changed hook reached the DLL one build late. Declare every module
+# source as an output of a no-op step that follows codegen. With Ninja's restat the object is rebuilt
+# only if codegen really rewrote its source.
+set(AO2DC_MODULE_SOURCES)
+file(GLOB _ao2dc_module_lists "${CMAKE_CURRENT_SOURCE_DIR}/generated/*/sources.cmake")
+foreach(_ao2dc_list ${_ao2dc_module_lists})
+    if(NOT _ao2dc_list MATCHES "/generated/default/")
+        unset(GENERATED_SOURCES)
+        include("${_ao2dc_list}")
+        list(APPEND AO2DC_MODULE_SOURCES ${GENERATED_SOURCES})
+        unset(GENERATED_SOURCES)
+    endif()
+endforeach()
+if(AO2DC_MODULE_SOURCES)
+    add_custom_command(
+        OUTPUT ${AO2DC_MODULE_SOURCES}
+        COMMAND ${CMAKE_COMMAND} -E true
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/generated/default/codegen.build.stamp"
+        COMMENT ""
+        VERBATIM)
+endif()
+
 # Built in-tree, the SDK writes its DLLs into its own source folder and they are only copied next
 # to ao2dc.exe when the exe relinks. Build them next to the exe instead, so an SDK-only change
 # (GPU plugin, runtime) is never left stale. The recompiler (rexglue) goes there too: it loads
