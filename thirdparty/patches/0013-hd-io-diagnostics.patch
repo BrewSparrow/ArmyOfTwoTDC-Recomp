@@ -1,0 +1,147 @@
+diff --git a/include/rex/filesystem/device.h b/include/rex/filesystem/device.h
+index 8edc796..118319c 100644
+--- a/include/rex/filesystem/device.h
++++ b/include/rex/filesystem/device.h
+@@ -28,6 +28,8 @@ class Device {
+   virtual bool Initialize() = 0;
+ 
+   const std::string& mount_path() const { return mount_path_; }
++  // The host file or folder behind this device (diagnostics); empty when it has none.
++  virtual std::string backing_path() const { return {}; }
+   virtual bool is_read_only() const { return true; }
+ 
+   virtual void Dump(string::StringBuffer* string_buffer) = 0;
+diff --git a/include/rex/filesystem/devices/host_path_device.h b/include/rex/filesystem/devices/host_path_device.h
+index 48100be..5071d2a 100644
+--- a/include/rex/filesystem/devices/host_path_device.h
++++ b/include/rex/filesystem/devices/host_path_device.h
+@@ -11,6 +11,7 @@
+ 
+ #pragma once
+ 
++#include <rex/filesystem.h>
+ #include <string>
+ 
+ #include <rex/filesystem/device.h>
+@@ -36,6 +37,7 @@ class HostPathDevice : public Device {
+   // and read-only devices leave it off (see a5c3a963 ghost-file fix).
+   bool allow_share_delete() const { return allow_share_delete_; }
+   const std::filesystem::path& host_path() const { return host_path_; }
++  std::string backing_path() const override { return rex::path_to_utf8(host_path_); }
+ 
+   const std::string& name() const override { return name_; }
+   uint32_t attributes() const override { return 0; }
+diff --git a/include/rex/filesystem/devices/stfs_container_device.h b/include/rex/filesystem/devices/stfs_container_device.h
+index f33d46c..20fcdd4 100644
+--- a/include/rex/filesystem/devices/stfs_container_device.h
++++ b/include/rex/filesystem/devices/stfs_container_device.h
+@@ -11,6 +11,7 @@
+ 
+ #pragma once
+ 
++#include <rex/filesystem.h>
+ #include <rex/filesystem/devices/stfs_xbox.h>
+ 
+ #include <map>
+@@ -46,6 +47,7 @@ class StfsContainerDevice : public Device {
+   Entry* ResolvePath(const std::string_view path) override;
+ 
+   const std::string& name() const override { return name_; }
++  std::string backing_path() const override { return rex::path_to_utf8(host_path_); }
+   uint32_t attributes() const override { return 0; }
+   uint32_t component_name_max_length() const override { return 40; }
+   const StfsHeader& header() const { return header_; }
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_io.cpp b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+index 3f1a852..c84bf97 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_io.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+@@ -12,6 +12,12 @@
+ // Disable warnings about unused parameters for kernel functions
+ #pragma GCC diagnostic ignored "-Wunused-parameter"
+ 
++#include <rex/cvar.h>
++#include <cctype>
++#include <chrono>
++#include <map>
++#include <mutex>
++#include <string_view>
+ #include <rex/filesystem/device.h>
+ #include <rex/kernel/xboxkrnl/private.h>
+ #include <rex/logging.h>
+@@ -29,6 +35,49 @@
+ #include <rex/system/xtypes.h>
+ #include <rex/thread/mutex.h>
+ 
++REXCVAR_DEFINE_BOOL(ao2dc_log_hd_io, false, "Game",
++                    "AO2DC diagnostic: log opens and nonzero reads of the HD archives (HD.sb, HD.toc) "
++                    "with the guest path and the host file behind it");
++
++namespace {
++bool IsHdArchive(std::string_view path) {
++  auto ends_with = [&](std::string_view suffix) {
++    if (path.size() < suffix.size())
++      return false;
++    for (size_t i = 0; i < suffix.size(); ++i)
++      if (std::tolower(static_cast<unsigned char>(path[path.size() - suffix.size() + i])) !=
++          suffix[i])
++        return false;
++    return true;
++  };
++  return ends_with("\hd.sb") || ends_with("\hd.toc") || ends_with("/hd.sb") ||
++         ends_with("/hd.toc") || ends_with(":hd.sb") || ends_with(":hd.toc");
++}
++
++// One line per HD archive for its first nonzero read, then a summary at most every 10 s.
++void LogHdRead(rex::filesystem::Entry* entry, uint64_t offset, uint32_t bytes) {
++  static std::mutex mutex;
++  struct Stat {
++    uint64_t reads = 0, bytes = 0;
++  };
++  static std::map<std::string, Stat> stats;
++  static auto last = std::chrono::steady_clock::now();
++  const std::string key = entry->absolute_path();
++  std::lock_guard lock(mutex);
++  Stat& s = stats[key];
++  if (s.reads++ == 0)
++    REXFS_INFO("HD read: first nonzero read of {} (backing {}): offset {} bytes {}", key,
++               entry->device() ? entry->device()->backing_path() : std::string(), offset, bytes);
++  s.bytes += bytes;
++  const auto now = std::chrono::steady_clock::now();
++  if (now - last >= std::chrono::seconds(10)) {
++    last = now;
++    for (const auto& [path, stat] : stats)
++      REXFS_INFO("HD read: {} reads {} bytes {}", path, stat.reads, stat.bytes);
++  }
++}
++}  // namespace
++
+ namespace rex::kernel::xboxkrnl {
+ using namespace rex::system;
+ 
+@@ -168,6 +217,16 @@ u32 NtCreateFile_entry(mapped_u32 handle_out, u32 desired_access,
+   }
+ 
+   *handle_out = handle;
++  if (REXCVAR_GET(ao2dc_log_hd_io) && IsHdArchive(target_path)) {
++    if (XSUCCEEDED(result) && vfs_file && vfs_file->entry())
++      REXFS_INFO("HD open: {} -> {} (backing {}) handle {:#x}", target_path,
++                 vfs_file->entry()->absolute_path(),
++                 vfs_file->entry()->device() ? vfs_file->entry()->device()->backing_path()
++                                             : std::string(),
++                 handle);
++    else
++      REXFS_INFO("HD open FAILED: {} -> {:#x}", target_path, result);
++  }
+   if (XFAILED(result)) {
+     REXKRNL_IMPORT_FAIL("NtCreateFile", "path='{}' -> {:#x}", target_path, result);
+   } else {
+@@ -220,6 +279,9 @@ u32 NtReadFile_entry(u32 file_handle, u32 event_handle, mapped_void apc_routine_
+         io_status_block->status = result;
+         io_status_block->information = bytes_read;
+       }
++      if (bytes_read && REXCVAR_GET(ao2dc_log_hd_io) && file->entry() &&
++          IsHdArchive(file->entry()->absolute_path()))
++        LogHdRead(file->entry(), byte_offset, bytes_read);
+ 
+       // Queue the APC callback. It must be delivered via the APC mechanism even
+       // though were are completing immediately.

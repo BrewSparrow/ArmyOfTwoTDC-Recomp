@@ -76,6 +76,11 @@ On top of the plain recompilation:
   GPU cannot hold 60 (`src/main_hooks/frame_rate_hook.cpp`). It is all or nothing: it only turns on
   when `video_mode_refresh_rate` is 60 (the default), otherwise the game stays at 30 and the log
   says why. Keep `readback_resolve = "fast"` (the default) - `"full"` costs too much at 60 FPS.
+- **Save Manager** (`F6`) - a full-window screen, separate from `F4`: back up saved progress, restore
+  a backup (confirmed, applied at the next start before any save is opened, with a recovery backup
+  first) and import the saves of an older release. Backups live in
+  `Saved Games\BrewSparrow\ArmyOfTwoTDC\Backups`, shared by all release folders. Details:
+  `docs/SAVE_MANAGER.md`.
 - **FPS counter** - "Show FPS counter" in the `F4` window (Display tab).
 - **Kernel fixes** - stale dispatch objects in reused memory (crash on `KeSetEvent`), instant
   storage-device selection.

@@ -10,4 +10,7 @@ When the game starts, each package is installed into `user\` the way a console i
 its hard drive; the game then finds the content itself. No rebuild is needed after adding or
 removing packages. Avatar items (`00009000`) are not supported. Online features do not work.
 
+The HD texture pack is not needed here: it is part of the disc dump and is installed from
+`assets\Content\...\454109AB00000000` automatically (a copy in this folder is skipped).
+
 Nothing in this folder is tracked by git or included in a release.

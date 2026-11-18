@@ -63,6 +63,12 @@ console). They are not part of any release and are never committed.
   `9DDFDADC8879D83BEE746E3C54945866E095576745` (Online Pass and Overkill Edition content). They
   are installed into `user\` when the game starts; no rebuild is needed. Avatar items
   (`00009000`) are not supported, and online features (including the online pass) do not work.
+- **HD textures:** nothing to add. The disc dump already holds the HD pack
+  (`assets\Content\0000000000000000\454109AB\00000002\454109AB00000000`, 1.4 GB). The game
+  installs it into `user\` on the first start (about 1.4 GB of free space is needed there) and
+  reuses that install afterwards; an incomplete install is repaired on the next start. If the
+  package is missing from your dump the game runs without the HD textures and the log says so
+  (look for "HD content:"). Do not also copy it into `dlc\`.
 
 ```
 title_update\TU_12K22DB_000001C000000.000000000008B

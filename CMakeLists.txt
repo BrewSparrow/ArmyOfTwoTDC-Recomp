@@ -98,6 +98,7 @@ endforeach()
 set(AO2DC_SOURCES
     src/main.cpp
     src/launcher_hook.cpp
+    src/save_store.cpp
 )
 
 if(WIN32)

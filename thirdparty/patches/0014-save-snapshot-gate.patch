@@ -1,0 +1,208 @@
+diff --git a/include/rex/system/xam/content_manager.h b/include/rex/system/xam/content_manager.h
+index 949d185..8107084 100644
+--- a/include/rex/system/xam/content_manager.h
++++ b/include/rex/system/xam/content_manager.h
+@@ -11,7 +11,11 @@
+ 
+ #pragma once
+ 
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
+ #include <memory>
++#include <mutex>
+ #include <string>
+ #include <unordered_map>
+ #include <vector>
+@@ -182,6 +186,15 @@ class ContentManager {
+   // and writes a .header file for XAM enumeration.
+   X_RESULT InstallContent(const std::filesystem::path& package_path);
+ 
++  // Save-write coordination (AO2DC Save Manager). BeginSaveSnapshot() succeeds only at a verified
++  // boundary: at that instant no content package other than marketplace content (saves, profile
++  // data) is open, and until EndSaveSnapshot() every attempt to create, open, delete or write the
++  // header or thumbnail of such a package waits, so no save can start being written while a
++  // snapshot is copied. Returns false when no such boundary came within `timeout` (a package
++  // stayed open); nothing is blocked then.
++  bool BeginSaveSnapshot(std::chrono::milliseconds timeout);
++  void EndSaveSnapshot();
++
+  private:
+   std::filesystem::path ResolvePackageRoot(uint64_t xuid, XContentType content_type,
+                                            uint32_t title_id = -1);
+@@ -196,6 +209,14 @@ class ContentManager {
+   ContentPackage* DetachPackage(std::unordered_map<string::string_key_case, ContentPackage*,
+                                                    string::string_key_case::Hash>::iterator it);
+ 
++  // Blocks while a save snapshot is active (marketplace content is never blocked).
++  void WaitForSaveSnapshot(XContentType content_type);
++  size_t OpenSavePackageCountLocked() const;
++
++  std::mutex snapshot_mutex_;
++  std::condition_variable snapshot_cv_;
++  std::atomic<bool> snapshot_active_{false};
++
+   KernelState* kernel_state_;
+   std::filesystem::path root_path_;
+ 
+diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
+index bd6c797..21dfaca 100644
+--- a/src/system/xam/content_manager.cpp
++++ b/src/system/xam/content_manager.cpp
+@@ -12,6 +12,7 @@
+ #include <array>
+ #include <cstring>
+ #include <queue>
++#include <thread>
+ #include <string>
+ 
+ #include <fmt/format.h>
+@@ -190,6 +191,7 @@ bool ContentManager::ContentExists(uint64_t xuid, const XCONTENT_AGGREGATE_DATA&
+ 
+ X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGATE_DATA data,
+                                                 uint32_t license_mask) {
++  WaitForSaveSnapshot(data.content_type);
+   if (data.title_id == uint32_t(-1)) {
+     data.title_id = kernel_state_->title_id();
+   }
+@@ -257,6 +259,7 @@ X_RESULT ContentManager::ReadContentHeaderFile(const std::string_view file_name,
+ 
+ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_t xuid,
+                                        const XCONTENT_AGGREGATE_DATA& data) {
++  WaitForSaveSnapshot(data.content_type);
+   {
+     auto global_lock = global_critical_region_.Acquire();
+     if (open_packages_.count(string::string_key_case(root_name))) {
+@@ -274,12 +277,18 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
+   auto package = ResolvePackage(root_name, xuid, data);
+   assert_not_null(package);
+ 
+-  {
+-    auto global_lock = global_critical_region_.Acquire();
+-    if (open_packages_.count(string::string_key_case(root_name))) {
+-      return X_ERROR_ALREADY_EXISTS;
++  for (;;) {
++    {
++      auto global_lock = global_critical_region_.Acquire();
++      if (open_packages_.count(string::string_key_case(root_name))) {
++        return X_ERROR_ALREADY_EXISTS;
++      }
++      if (!snapshot_active_ || data.content_type == XContentType::kMarketplaceContent) {
++        open_packages_.insert({string::string_key_case::create(root_name), package.release()});
++        break;
++      }
+     }
+-    open_packages_.insert({string::string_key_case::create(root_name), package.release()});
++    WaitForSaveSnapshot(data.content_type);  // a snapshot began meanwhile: wait for it to end
+   }
+   return X_ERROR_SUCCESS;
+ }
+@@ -287,6 +296,7 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
+ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t xuid,
+                                      const XCONTENT_AGGREGATE_DATA& data,
+                                      uint32_t& content_license) {
++  WaitForSaveSnapshot(data.content_type);
+   {
+     auto global_lock = global_critical_region_.Acquire();
+     if (open_packages_.count(string::string_key_case(root_name))) {
+@@ -304,12 +314,18 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t
+       data.file_name(), xuid, kernel_state_->title_id(), data.content_type));
+   content_license = package->GetPackageLicense();
+ 
+-  {
+-    auto global_lock = global_critical_region_.Acquire();
+-    if (open_packages_.count(string::string_key_case(root_name))) {
+-      return X_ERROR_ALREADY_EXISTS;
++  for (;;) {
++    {
++      auto global_lock = global_critical_region_.Acquire();
++      if (open_packages_.count(string::string_key_case(root_name))) {
++        return X_ERROR_ALREADY_EXISTS;
++      }
++      if (!snapshot_active_ || data.content_type == XContentType::kMarketplaceContent) {
++        open_packages_.insert({string::string_key_case::create(root_name), package.release()});
++        break;
++      }
+     }
+-    open_packages_.insert({string::string_key_case::create(root_name), package.release()});
++    WaitForSaveSnapshot(data.content_type);
+   }
+   return X_ERROR_SUCCESS;
+ }
+@@ -350,6 +366,7 @@ X_RESULT ContentManager::GetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
+ 
+ X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
+                                              std::vector<uint8_t> buffer) {
++  WaitForSaveSnapshot(data.content_type);
+   auto global_lock = global_critical_region_.Acquire();
+   auto package_path = ResolvePackagePath(xuid, data);
+   std::filesystem::create_directories(package_path);
+@@ -365,6 +382,7 @@ X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
+ }
+ 
+ X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data) {
++  WaitForSaveSnapshot(data.content_type);
+   auto global_lock = global_critical_region_.Acquire();
+ 
+   if (IsContentOpen(data)) {
+@@ -407,6 +425,7 @@ X_RESULT ContentManager::UnmountContent(uint64_t xuid, const XCONTENT_AGGREGATE_
+ 
+ X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
+                                                  const XCONTENT_AGGREGATE_DATA& data) {
++  WaitForSaveSnapshot(data.content_type);
+   // Unmount phase: tolerant of not-mounted state
+   ContentPackage* package = nullptr;
+   {
+@@ -569,6 +588,52 @@ static X_RESULT ExtractEntry(rex::filesystem::Entry* entry,
+   return X_ERROR_SUCCESS;
+ }
+ 
++void ContentManager::WaitForSaveSnapshot(XContentType content_type) {
++  if (content_type == XContentType::kMarketplaceContent) {
++    return;
++  }
++  std::unique_lock<std::mutex> lock(snapshot_mutex_);
++  snapshot_cv_.wait(lock, [this] { return !snapshot_active_; });
++}
++
++size_t ContentManager::OpenSavePackageCountLocked() const {
++  size_t count = 0;
++  for (const auto& it : open_packages_) {
++    if (it.second->GetPackageContentData().content_type != XContentType::kMarketplaceContent) {
++      ++count;
++    }
++  }
++  return count;
++}
++
++bool ContentManager::BeginSaveSnapshot(std::chrono::milliseconds timeout) {
++  const auto deadline = std::chrono::steady_clock::now() + timeout;
++  for (;;) {
++    {
++      // The check and the flag are one step under the same lock that guards open_packages_, so a
++      // package is either already counted here or sees the flag when it tries to open.
++      auto global_lock = global_critical_region_.Acquire();
++      if (OpenSavePackageCountLocked() == 0) {
++        std::lock_guard<std::mutex> lock(snapshot_mutex_);
++        snapshot_active_ = true;
++        return true;
++      }
++    }
++    if (std::chrono::steady_clock::now() >= deadline) {
++      return false;
++    }
++    std::this_thread::sleep_for(std::chrono::milliseconds(5));
++  }
++}
++
++void ContentManager::EndSaveSnapshot() {
++  {
++    std::lock_guard<std::mutex> lock(snapshot_mutex_);
++    snapshot_active_ = false;
++  }
++  snapshot_cv_.notify_all();
++}
++
+ X_RESULT ContentManager::InstallContent(const std::filesystem::path& package_path) {
+   if (!std::filesystem::exists(package_path)) {
+     return X_ERROR_FILE_NOT_FOUND;
