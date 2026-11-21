@@ -46,7 +46,7 @@ index 201b623..326ca9b 100644
    app.set_version_flag("--version", REXGLUE_VERSION_STRING);
    app.require_subcommand(1);
 diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
-index bd43109..493d28e 100644
+index bd43109..9132682 100644
 --- a/src/system/function_dispatcher.cpp
 +++ b/src/system/function_dispatcher.cpp
 @@ -14,6 +14,9 @@
@@ -59,7 +59,7 @@ index bd43109..493d28e 100644
  #include <rex/dbg.h>
  #include <rex/logging.h>
  #include <rex/perf/counter.h>
-@@ -34,9 +37,23 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
+@@ -34,9 +37,60 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
  
  }  // namespace
  
@@ -77,6 +77,43 @@ index bd43109..493d28e 100644
 +      words += fmt::format(" {:08X}", __builtin_bswap32(v));
 +    }
 +    REXLOG_ERROR("Invalid call: memory at r31-16:{}", words);
++  }
++  // Local addition (AO2DC): the object r3 (the `this` of a virtual call) and the table its first word
++  // points at, to tell a freed or overwritten object from a bad vtable.
++  if (base && ctx.r3.u32 >= 0x10000 && ctx.r3.u32 < 0xA0000000u) {
++    auto dump = [&](const char* what, uint32_t addr, int from, int count) {
++      std::string words;
++      for (int i = from; i < from + count; ++i) {
++        uint32_t a = addr + i * 4;
++        uint32_t host = a + (a >= 0xE0000000u ? 0x1000u : 0u);
++        words += fmt::format(" {:08X}", __builtin_bswap32(*reinterpret_cast<uint32_t*>(base + host)));
++      }
++      REXLOG_ERROR("Invalid call: {} at 0x{:08X}{}", what, addr + from * 4, words);
++    };
++    dump("r3 object", ctx.r3.u32, -4, 24);
++    uint32_t vtable = __builtin_bswap32(*reinterpret_cast<uint32_t*>(base + ctx.r3.u32));
++    if (vtable >= 0x10000 && vtable < 0xA0000000u)
++      dump("vtable", vtable, 0, 24);
++  }
++  // Local addition (AO2DC): the guest call chain. A frame's back chain is at 0(sp); the return
++  // address of the function owning `sp` is saved just below its caller's sp.
++  if (base) {
++    auto rd = [&](uint32_t a) {
++      uint32_t host = a + (a >= 0xE0000000u ? 0x1000u : 0u);
++      return __builtin_bswap32(*reinterpret_cast<uint32_t*>(base + host));
++    };
++    std::string chain;
++    uint32_t sp = ctx.r1.u32;
++    // Stay inside the thread's stack: it ends on a 64 KB boundary above sp.
++    const uint32_t limit = (ctx.r1.u32 + 0xFFFFu) & ~0xFFFFu;
++    for (int i = 0; i < 24 && sp >= 0x10000 && sp < limit; ++i) {
++      uint32_t parent = rd(sp);
++      if (parent <= sp || parent >= limit)
++        break;
++      chain += fmt::format(" {:08X}", rd(parent - 8));
++      sp = parent;
++    }
++    REXLOG_ERROR("Invalid call: guest call chain (return addresses, innermost first):{}", chain);
 +  }
 +  // Local addition (AO2DC): the caller's return address and argument registers, to find the
 +  // call site.

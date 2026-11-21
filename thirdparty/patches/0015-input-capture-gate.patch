@@ -1,0 +1,89 @@
+diff --git a/include/rex/input/input_driver.h b/include/rex/input/input_driver.h
+index 52116f1..51f2786 100644
+--- a/include/rex/input/input_driver.h
++++ b/include/rex/input/input_driver.h
+@@ -10,6 +10,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <atomic>
+ #include <cstddef>
+ #include <functional>
+ #include <vector>
+@@ -46,6 +47,12 @@ class InputDriver {
+ 
+   virtual void OnWindowAvailable(rex::ui::Window* /*window*/) {}
+ 
++  /// While captured (the AO2DC Save Manager screen owns input), every driver reports no pad,
++  /// keyboard or mouse input to the guest, whatever the active callback says. Process-wide.
++  // Defined in the runtime DLL (input_system.cpp): one flag for every module, not one per DLL.
++  static void SetCaptured(bool captured);
++  static bool Captured();
++
+   void set_is_active_callback(std::function<bool()> is_active_callback) {
+     is_active_callback_ = is_active_callback;
+   }
+@@ -57,7 +64,9 @@ class InputDriver {
+   rex::ui::Window* window() const { return window_; }
+   size_t window_z_order() const { return window_z_order_; }
+ 
+-  bool is_active() const { return !is_active_callback_ || is_active_callback_(); }
++  bool is_active() const {
++    return !Captured() && (!is_active_callback_ || is_active_callback_());
++  }
+ 
+  private:
+   rex::ui::Window* window_;
+diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
+index 813bb1c..a12b69d 100644
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -30,6 +30,14 @@ REXCVAR_DEFINE_STRING(input_backend, "sdl", "Input", "Input backend: sdl, xinput
+ REXCVAR_DEFINE_BOOL(guide_button, false, "Input", "Enable guide button pass-through");
+ namespace rex::input {
+ 
++static std::atomic<bool> g_captured{false};
++void InputDriver::SetCaptured(bool captured) {
++  g_captured.store(captured);
++}
++bool InputDriver::Captured() {
++  return g_captured.load();
++}
++
+ namespace {
+ 
+ // Synthetic devices are parked past every physical ordinal so they cannot push
+diff --git a/src/input/xinput/xinput_input_driver.cpp b/src/input/xinput/xinput_input_driver.cpp
+index a6a1da9..d5efd21 100644
+--- a/src/input/xinput/xinput_input_driver.cpp
++++ b/src/input/xinput/xinput_input_driver.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <array>
++#include <cstring>
+ #include <filesystem>
+ 
+ #include <rex/assert.h>
+@@ -223,6 +224,10 @@ X_RESULT XinputInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state
+   out_state->gamepad.thumb_ly = native_state.state.Gamepad.sThumbLY;
+   out_state->gamepad.thumb_rx = native_state.state.Gamepad.sThumbRX;
+   out_state->gamepad.thumb_ry = native_state.state.Gamepad.sThumbRY;
++  if (Captured()) {
++    // An untouched pad while the Save Manager screen owns input.
++    std::memset(&out_state->gamepad, 0, sizeof(out_state->gamepad));
++  }
+ 
+   return result;
+ }
+@@ -256,6 +261,10 @@ X_RESULT XinputInputDriver::GetDeviceKeystroke(DeviceId id, uint32_t flags,
+     return X_ERROR_DEVICE_NOT_CONNECTED;
+   }
+ 
++  if (Captured()) {
++    return X_ERROR_EMPTY;
++  }
++
+   // XInputGetKeystroke on Windows has a bug where it will return
+   // ERROR_SUCCESS (0) even if the device is not connected:
+   // https://stackoverflow.com/questions/23669238/xinputgetkeystroke-returning-error-success-while-controller-is-unplugged

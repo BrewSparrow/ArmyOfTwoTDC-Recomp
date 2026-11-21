@@ -3,8 +3,10 @@
 // save_store.h. Opening it does not save, restore or pause anything.
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <ctime>
 #include <functional>
 #include <memory>
@@ -14,6 +16,7 @@
 #include <vector>
 
 #include <imgui.h>
+#include <rex/input/input_driver.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/imgui_drawer.h>
 
@@ -27,12 +30,53 @@ inline std::atomic<bool> g_save_manager_open{false};
 // What the screen needs from the app.
 struct SaveManagerHooks {
   std::function<saves::Context()> context;
-  // Save-write coordination, null when the game runtime is not up. Begin returns true only at a
-  // verified boundary (no save/profile package open); End must follow.
-  std::function<bool(std::chrono::milliseconds)> begin_snapshot;
-  std::function<void()> end_snapshot;
+  // Save-write coordination, null when the game runtime is not up. Begin returns an owner token
+  // (0: none) only at a verified boundary (no save/profile package open or being changed), sets
+  // *overlapped when another snapshot is active; End(token) releases the gate for its owner only.
+  std::function<uint64_t(std::chrono::milliseconds, bool* overlapped)> begin_snapshot;
+  std::function<bool(uint64_t)> end_snapshot;
   std::string shortcut_note;  // e.g. a key conflict found at startup
   std::string shortcut_key;   // current key of the F6 bind
+};
+
+// Background work of the screen outlives the screen itself (F6 closes it while a backup runs), so it
+// is tracked per process: shutdown asks it to stop and waits for it before the game's runtime goes.
+struct SaveManagerRuntime {
+  std::mutex mutex;
+  std::condition_variable done;
+  int workers = 0;
+  std::atomic<bool> stopping{false};
+};
+inline SaveManagerRuntime g_save_runtime;
+
+// Asks running backups to stop at the next file and waits until they have ended (and released the
+// snapshot gate). Returns false when they did not end within `wait`.
+inline bool ShutdownSaveManager(std::chrono::milliseconds wait) {
+  std::unique_lock lock(g_save_runtime.mutex);
+  g_save_runtime.stopping = true;
+  return g_save_runtime.done.wait_for(lock, wait, [] { return g_save_runtime.workers == 0; });
+}
+
+// Holds the snapshot gate for its lifetime; only the token it was given releases it.
+class SnapshotLease {
+ public:
+  SnapshotLease(const SaveManagerHooks& hooks, std::chrono::milliseconds timeout) : hooks_(hooks) {
+    if (hooks_.begin_snapshot)
+      token_ = hooks_.begin_snapshot(timeout, &overlapped_);
+  }
+  ~SnapshotLease() {
+    if (token_ && hooks_.end_snapshot)
+      hooks_.end_snapshot(token_);
+  }
+  SnapshotLease(const SnapshotLease&) = delete;
+  SnapshotLease& operator=(const SnapshotLease&) = delete;
+  bool held() const { return token_ != 0; }
+  bool overlapped() const { return overlapped_; }
+
+ private:
+  const SaveManagerHooks& hooks_;
+  uint64_t token_ = 0;
+  bool overlapped_ = false;
 };
 
 class SaveManagerDialog : public rex::ui::ImGuiDialog {
@@ -62,23 +106,73 @@ class SaveManagerDialog : public rex::ui::ImGuiDialog {
   };
 
   SaveManagerDialog(rex::ui::ImGuiDrawer* drawer, const SaveManagerHooks& hooks)
-      : rex::ui::ImGuiDialog(drawer), hooks_(hooks), shared_(std::make_shared<Shared>()) {
+      : rex::ui::ImGuiDialog(drawer), hooks_(hooks), shared_(SharedState()) {
     instance_ = this;
     g_save_manager_open = true;
+    // Mouse only: the game gets no pad or keyboard input while this screen is open, and the screen
+    // itself uses neither pad nor keyboard navigation (only F6/Escape close it).
+    rex::input::InputDriver::SetCaptured(true);
     ImGuiIO& io = GetIO();
     previous_nav_flags_ = io.ConfigFlags;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // Tab / arrows / Enter inside the screen
+    io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad);
     Refresh();
   }
 
   ~SaveManagerDialog() override {
     ImGuiIO& io = GetIO();
     io.ConfigFlags = previous_nav_flags_;
+    rex::input::InputDriver::SetCaptured(false);
     g_save_manager_open = false;
     instance_ = nullptr;
   }
 
   // ---- background work -------------------------------------------------------------------
+
+  // One state for the whole process: closing and reopening the screen during a backup shows the
+  // same busy state and result.
+  static std::shared_ptr<Shared> SharedState() {
+    static std::shared_ptr<Shared> state = std::make_shared<Shared>();
+    return state;
+  }
+
+  // Marks an operation as running; false when one already is (operations never overlap).
+  static bool TryBegin(const std::shared_ptr<Shared>& s, const std::string& text) {
+    std::lock_guard lock(s->mutex);
+    if (s->busy)
+      return false;
+    s->status = text;
+    s->status_ok = true;
+    s->busy = true;
+    s->dirty = true;
+    ++s->changes;
+    return true;
+  }
+
+  // Runs `body` on a tracked worker thread with a top-level handler: whatever happens the busy state
+  // ends and the screen shows a result. Refused while the game is shutting down.
+  template <typename F>
+  static void RunWorker(const std::shared_ptr<Shared>& s, F body) {
+    {
+      std::lock_guard lock(g_save_runtime.mutex);
+      if (g_save_runtime.stopping) {
+        SetStatus(s, "The game is closing; nothing was started.", false);
+        return;
+      }
+      ++g_save_runtime.workers;
+    }
+    std::thread([s, body = std::move(body)]() mutable {
+      try {
+        body();
+      } catch (const std::exception& e) {
+        SetStatus(s, std::string("The operation failed unexpectedly: ") + e.what(), false);
+      } catch (...) {
+        SetStatus(s, "The operation failed unexpectedly.", false);
+      }
+      std::lock_guard lock(g_save_runtime.mutex);
+      --g_save_runtime.workers;
+      g_save_runtime.done.notify_all();
+    }).detach();
+  }
 
   static void SetStatus(const std::shared_ptr<Shared>& s, const std::string& text, bool ok, bool busy = false) {
     std::lock_guard lock(s->mutex);
@@ -115,41 +209,53 @@ class SaveManagerDialog : public rex::ui::ImGuiDialog {
 
   void StartBackup() {
     auto s = shared_;
+    if (!TryBegin(s, "Backing up saved progress..."))
+      return;
     const SaveManagerHooks hooks = hooks_;
-    SetStatus(s, "Backing up saved progress...", true, true);
-    std::thread([s, hooks] {
-      const saves::Context ctx = hooks.context();
-      bool at_boundary = false;
-      if (hooks.begin_snapshot)
-        at_boundary = hooks.begin_snapshot(std::chrono::milliseconds(3000));
-      if (at_boundary) {
-        // No save or profile package is open and none can open until End: this is a complete save.
-        const saves::Result r = saves::CreateBackup(ctx, "manual", "Save Manager (in game)");
-        if (hooks.end_snapshot)
-          hooks.end_snapshot();
-        SetStatus(s, r.ok ? r.message + " Verified." : r.message, r.ok);
-        return;
+    RunWorker(s, [s, hooks] {
+      saves::Context ctx = hooks.context();
+      ctx.cancel = &g_save_runtime.stopping;
+      saves::Result result;
+      bool queue = false, overlapped = false;
+      {
+        SnapshotLease lease(hooks, std::chrono::milliseconds(3000));
+        if (lease.held()) {
+          // No save or profile package is open and none can open until the lease ends: a complete save.
+          result = saves::CreateBackup(ctx, "manual", "Save Manager (in game)");
+        } else if (lease.overlapped()) {
+          overlapped = true;
+        } else {
+          queue = true;
+        }
+      }  // the gate is released here, before anything is reported
+      if (overlapped) {
+        SetStatus(s, "Another backup is already running.", false);
+      } else if (queue) {
+        // The game kept a save package open (or the runtime is not up): do not copy files that may be
+        // half written. Run the backup at the next launch, before the game starts.
+        const saves::Result q = saves::QueueBackup(ctx);
+        SetStatus(s,
+                  q.ok ? "QUEUED - the game was still writing saved data. The backup will run the next time "
+                         "the game starts, before it opens any save file, and appear here as Complete only "
+                         "after it exists and has been verified."
+                       : q.message,
+                  q.ok);
+      } else {
+        SetStatus(s, result.ok ? result.message + " Verified." : result.message, result.ok);
       }
-      // The game kept a save package open (or the runtime is not up): do not copy files that may
-      // be half written. Run the backup at the next launch, before the game starts.
-      const saves::Result q = saves::QueueBackup(ctx);
-      SetStatus(s,
-                q.ok ? "QUEUED - the game was still writing saved data. The backup will run the next time "
-                       "the game starts, before it opens any save file, and appear here as Complete only "
-                       "after it exists and has been verified."
-                     : q.message,
-                q.ok);
-    }).detach();
+    });
   }
 
   void StartImport(const std::filesystem::path& folder) {
     auto s = shared_;
-    const saves::Context ctx = hooks_.context();
-    SetStatus(s, "Importing saved progress from " + folder.string() + "...", true, true);
-    std::thread([s, ctx, folder] {
+    if (!TryBegin(s, "Importing saved progress from " + folder.string() + "..."))
+      return;
+    saves::Context ctx = hooks_.context();
+    ctx.cancel = &g_save_runtime.stopping;
+    RunWorker(s, [s, ctx, folder] {
       const saves::Result r = saves::ImportFromInstallation(ctx, folder);
       SetStatus(s, r.ok ? "Imported as a new backup. " + r.message : r.message, r.ok);
-    }).detach();
+    });
   }
 
   void QueueRestore(const std::string& id) {
@@ -393,13 +499,21 @@ class SaveManagerDialog : public rex::ui::ImGuiDialog {
           const saves::BackupInfo& b = backups[selected_];
           ImGui::Text("Backup:   %s  (%s, %s, %zu files)", b.id.c_str(), LocalTime(b.created).c_str(),
                       Size(b.bytes).c_str(), b.file_count);
-          ImGui::Text("Profile:  %s", b.profiles.empty() ? "-" : b.profiles[0].c_str());
+          std::string replaced;
+          for (const std::string& p : b.profiles)
+            replaced += (replaced.empty() ? "" : ", ") + p;
+          ImGui::Text("Profiles replaced by this backup:  %s", replaced.empty() ? "-" : replaced.c_str());
           std::string current;
           for (const std::string& p : profiles)
             current += (current.empty() ? "" : ", ") + p;
-          ImGui::Text("Target:   this installation's saved progress for profile %s%s",
-                      b.profiles.empty() ? "-" : b.profiles[0].c_str(),
-                      current.empty() ? " (none saved yet)" : "");
+          ImGui::Text("Profiles with saved progress here now:  %s", current.empty() ? "(none)" : current.c_str());
+          for (const std::string& p : b.profiles) {
+            if (std::find(profiles.begin(), profiles.end(), p) == profiles.end())
+              ImGui::TextColored(kBad,
+                                 "Warning: profile %s has no saved progress in this installation. It is restored under "
+                                 "that profile as it is, not moved to another one; the game only sees it when it is "
+                                 "signed in as that profile.", p.c_str());
+          }
           ImGui::Spacing();
           ImGui::PushTextWrapPos(560.0f);
           ImGui::TextWrapped(

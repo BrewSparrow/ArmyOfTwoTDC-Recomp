@@ -1,14 +1,21 @@
 // save_store_test.cpp - exercises src/save_store.cpp on disposable folders.
 // Build and run (from the project folder, with clang on PATH):
 //   clang++ -std=c++20 -O1 tests/save_store_test.cpp src/save_store.cpp -o save_store_test.exe
+// (also covers the SDK's header-only save gate, thirdparty/rexglue-sdk/include/rex/system/xam/save_gate.h)
 //   save_store_test.exe
 #include "../src/save_store.h"
+#include "../thirdparty/rexglue-sdk/include/rex/system/xam/save_gate.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <memory>
 #include <fstream>
 #include <map>
 #include <sstream>
 #include <thread>
+
+#include <windows.h>
 
 using namespace ao2dc::saves;
 
@@ -362,14 +369,172 @@ int main() {
     std::thread t([&] { refused = !CreateBackup(Ctx(user, backups), "manual", "locked").ok; });
     t.join();
     Check(held.acquired() && refused, "a second operation on the same saves is refused while one runs");
-    bool other_instance = false;
-    NamedLock run("RUN", user);
-    std::thread t2([&] {
-      NamedLock again("RUN", user);
-      other_instance = !again.acquired();
+  }
+
+  std::printf("one game per saves folder\n");
+  {
+    auto first = std::make_unique<InstanceLock>(user);
+    bool refused = false;
+    std::thread t([&] {
+      InstanceLock again(user);
+      refused = !again.acquired();
     });
-    t2.join();
-    Check(run.acquired() && other_instance, "a second instance with the same saves is detected");
+    t.join();
+    Check(first->acquired() && refused, "a second copy using the same saves folder is refused");
+    first.reset();
+    InstanceLock after(user);
+    Check(after.acquired(), "the lock is free again when the first copy ends");
+  }
+  {
+    std::unique_ptr<InstanceLock> held;
+    std::thread t([&] { held = std::make_unique<InstanceLock>(user); });
+    t.join();  // the thread that took the lock is gone
+    InstanceLock second(user);
+    Check(held->acquired() && !second.acquired(), "the lock does not depend on the thread that took it");
+    InstanceLock other_root(base / "release-B" / "user");
+    Check(other_root.acquired(), "another release folder (another saves folder) is not blocked");
+  }
+
+  std::printf("rollback that cannot finish\n");
+  {
+    MakeUser(user, 5);
+    const auto now = Snapshot(user);
+    const size_t before = CountDirs(backups);
+    HANDLE hold = INVALID_HANDLE_VALUE;
+    fs::path held_file;
+    Context c = Ctx(user, backups);
+    c.fault = [&](const std::string& point) {
+      if (point == "commit:7")
+        throw std::runtime_error("simulated failure during the swap");
+      if (point == "rollback:0") {  // a moved-aside save is held open without sharing: it cannot be moved back
+        for (const auto& e : fs::directory_iterator(user / ".ao2dc"))
+          if (e.path().filename().string().rfind("restore-", 0) == 0) {
+            held_file = e.path() / "pre" / "achievements" / "454109AB.toml";
+            hold = CreateFileW(held_file.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+          }
+      }
+    };
+    Result rr = RestoreBackup(c, b1.id);
+    Check(hold != INVALID_HANDLE_VALUE, "(test) the moved-aside file is held open");
+    Check(!rr.ok && rr.unresolved, "a rollback that fails is reported as failed and unresolved");
+    Check(rr.message.find("could NOT") != std::string::npos && rr.message.find("your previous saved progress was put back") == std::string::npos,
+          "it does not claim the previous saves were put back: " + rr.message.substr(0, 120));
+    Check(UnresolvedRecovery(user).size() == 1 && fs::exists(held_file) && fs::exists(UnresolvedRecovery(user)[0] / "journal.toml"),
+          "work/pre and the journal are kept");
+    Check(CountDirs(backups) == before + 1, "the verified recovery backup is kept");
+    bool recovery_ok = false;
+    for (auto& b : ListBackups(backups))
+      if (b.kind == "recovery" && b.valid)
+        recovery_ok = true;
+    Check(recovery_ok, "(the recovery backup is complete)");
+    Result again = RestoreBackup(Ctx(user, backups), b1.id);
+    Check(!again.ok && again.unresolved && Snapshot(user) != now, "another restore does not run while recovery is unresolved");
+    QueueBackup(Ctx(user, backups));
+    auto lines = RunLaunchTasks(Ctx(user, backups));  // next launch: the retry still fails, the queue must not run
+    bool claims = false;
+    for (auto& l : lines)
+      claims = claims || l.find("your previous saved progress was put back") != std::string::npos;
+    Check(!claims && UnresolvedRecovery(user).size() == 1 && ListPending(user).size() == 1 && CountDirs(backups) == before + 1,
+          "launch retries, does not claim success and runs no queued item");
+    CloseHandle(hold);
+    lines = RunLaunchTasks(Ctx(user, backups));  // the holder is gone
+    Check(UnresolvedRecovery(user).empty() && Snapshot(user) == now, "once the file is free the next launch restores the previous saves exactly");
+    Check(ListPending(user).empty() && CountDirs(backups) == before + 2, "then the queued item runs");
+  }
+
+  std::printf("shutdown cancels a backup\n");
+  {
+    const size_t n = CountDirs(backups);
+    std::atomic<bool> stop{true};
+    Context c = Ctx(user, backups);
+    c.cancel = &stop;
+    Result r = CreateBackup(c, "manual", "cancelled");
+    Check(!r.ok && r.message.find("cancelled") != std::string::npos && CountDirs(backups) == n && !HasTmp(backups),
+          "a backup stops at the next file and leaves nothing behind");
+  }
+
+  std::printf("save gate\n");
+  {
+    using rex::system::xam::SaveGate;
+    using rex::system::xam::SaveMutationScope;
+    auto sleep = [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); };
+    SaveGate gate;
+    bool overlapped = true;
+    uint64_t token = gate.TryBegin(1, &overlapped);
+    Check(token == 0 && !overlapped && !gate.active(), "no snapshot while a save package is open");
+    {
+      SaveMutationScope write(gate, true);  // a header / thumbnail / delete in progress
+      Check(gate.TryBegin(0) == 0, "no snapshot while a header, thumbnail, create, open, close or delete is running");
+    }
+    token = gate.TryBegin(0, &overlapped);
+    Check(token != 0 && gate.active(), "a snapshot begins at a boundary");
+    uint64_t second = gate.TryBegin(0, &overlapped);
+    Check(second == 0 && overlapped, "an overlapping snapshot is rejected");
+    Check(!gate.End(token + 1) && !gate.End(0) && gate.active(), "only the owner's token releases the gate");
+
+    std::atomic<bool> entered{false};
+    std::thread writer([&] {
+      SaveMutationScope write(gate, true);  // wants to write while the snapshot copies
+      entered = true;
+    });
+    sleep(150);
+    Check(!entered, "a write waits for the whole snapshot, it is never let through on a timer");
+    {
+      SaveMutationScope closing(gate, true, false);  // closing is only counted, never blocked
+      Check(true, "closing a package does not wait");
+    }
+    Check(gate.End(token), "the owner releases the gate");
+    writer.join();
+    Check(entered, "the waiting write continues once it is released");
+    Check(!gate.End(token), "a stale token cannot release a later snapshot");
+    const uint64_t next = gate.TryBegin(0);
+    Check(next != 0 && next != token && !gate.End(token) && gate.active(), "(a new snapshot has its own token)");
+    gate.End(next);
+    {
+      SaveMutationScope marketplace(gate, false);  // marketplace content is not covered
+      Check(gate.TryBegin(0) != 0, "marketplace content does not hold a snapshot off");
+      gate.End(1000);
+    }
+
+    // Writers and a snapshotter at once: nobody may be inside a write while a snapshot is held.
+    SaveGate g2;
+    std::atomic<int> inside{0};
+    std::atomic<bool> stop{false}, violated{false};
+    std::atomic<int> writes{0}, snapshots{0};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 4; ++i)
+      threads.emplace_back([&] {
+        while (!stop) {
+          SaveMutationScope w(g2, true);
+          ++inside;
+          std::this_thread::yield();
+          ++writes;
+          --inside;
+        }
+      });
+    for (int i = 0; i < 200; ++i) {
+      uint64_t t = 0;
+      for (int tries = 0; tries < 2000 && !t; ++tries) {
+        t = g2.TryBegin(0);
+        if (!t)
+          std::this_thread::yield();
+      }
+      if (!t)
+        continue;
+      ++snapshots;
+      for (int k = 0; k < 20; ++k) {  // "copy"
+        if (inside != 0)
+          violated = true;
+        std::this_thread::yield();
+      }
+      g2.End(t);
+    }
+    stop = true;
+    for (auto& t : threads)
+      t.join();
+    Check(!violated && snapshots > 20 && writes > 100,
+          "no write ever ran inside a snapshot (" + std::to_string(snapshots.load()) + " snapshots, " +
+              std::to_string(writes.load()) + " writes)");
   }
 
   std::printf("\n%d passed, %d failed\n", g_passed, g_failed);

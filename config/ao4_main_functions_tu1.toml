@@ -1752,3 +1752,114 @@ registers = ["r1", "r3"]
 address = 0x82E38FC8
 name = "Ao2dcPingEmitter"
 registers = ["r1", "r3"]
+
+# Stale texture guard (src/main_hooks/stale_bind_guard.cpp), Title Update 1.
+# sub_82E73770, right after `mr r29,r5` (r29 = the texture object); the lwzx at 0x82E73794 follows.
+[[midasm_hook]]
+address = 0x82E73794
+name = "Ao2dcGuardStaleBind"
+registers = ["r29"]
+
+# Filesystem null-device guard (src/main_hooks/fs_device_diag.cpp), Title Update 1. sub_838C1B90:
+# 0x838C1BE8 follows `bl sub_838C14A0` (test hook); 0x838C1C74 is the `lbz r9,10(r3)` that crashes on a null
+# device (skip to the epilogue at 0x838C1C8C).
+[[midasm_hook]]
+address = 0x838C1BE8
+name = "Ao2dcTestNullFsDevice"
+registers = ["r3", "r30"]
+
+[[midasm_hook]]
+address = 0x838C1C74
+name = "Ao2dcSkipNullFsDevice"
+registers = ["r3", "r30"]
+jump_address_on_true = 0x838C1C8C
+
+# Bounded request ring (cvar ao2dc_diag_fs_requests): 0x838C1B9C is `mr r31,r3`, r12 holds the caller's lr.
+[[midasm_hook]]
+address = 0x838C1B9C
+name = "Ao2dcLogFsRequest"
+registers = ["r3", "r4", "r12"]
+
+# sub_838C1F48 entry: r3 = the queued filesystem job.
+[[midasm_hook]]
+address = 0x838C1F48
+name = "Ao2dcLogFsJob"
+registers = ["r3"]
+
+# sub_838C1FA0: start of the path copy, r30 = descriptor, r31 = owner.
+[[midasm_hook]]
+address = 0x838C2108
+name = "Ao2dcLogFsCopy"
+registers = ["r30", "r31"]
+
+# sub_838C2290: r4 = source path string, before it is copied into the descriptor.
+[[midasm_hook]]
+address = 0x838C2298
+name = "Ao2dcLogFsSource"
+registers = ["r4"]
+
+# sub_83879B08 entry: r3 = the queued AudioCore stream-open message (path inline at +56).
+[[midasm_hook]]
+address = 0x83879B08
+name = "Ao2dcLogAudioMsg"
+registers = ["r3"]
+
+# sub_8387A1E0: the stream-open message has just been built; r1 = guest stack (msg at 96(r1), queue at 80(r1)).
+[[midasm_hook]]
+address = 0x8387A3E0
+name = "Ao2dcTrackAudioMsg"
+registers = ["r1"]
+
+# Command-buffer bump allocators (leaf functions): who allocates from the queue, at which offset.
+[[midasm_hook]]
+address = 0x83868650
+name = "Ao2dcLogQueueAlloc"
+registers = ["r3", "r4"]
+
+[[midasm_hook]]
+address = 0x83868670
+name = "Ao2dcLogQueueAlloc8"
+registers = ["r3"]
+
+# sub_82E385F8 at the bl after a property value was copied into the parameter block: r3 = list node, r31 = sound instance.
+[[midasm_hook]]
+address = 0x82E38860
+name = "Ao2dcLogParamCopy"
+registers = ["r3", "r31"]
+
+# sub_82E385F8: the two calls that clear an instance's property list (sub_82E317A0), r31 = the instance.
+[[midasm_hook]]
+address = 0x82E38650
+name = "Ao2dcLogListClear"
+registers = ["r31"]
+
+[[midasm_hook]]
+address = 0x82E388A4
+name = "Ao2dcLogListClearB"
+registers = ["r31"]
+
+# sub_82E37510 (stores a raw string pointer into a property node), after its `mflr r12`: r3 list, r5 id, r6 string, r12 caller.
+[[midasm_hook]]
+address = 0x82E37514
+name = "Ao2dcLogStrPropSet"
+registers = ["r3", "r5", "r6", "r12"]
+
+# sub_82E59620: the emitter's 512-byte scratch buffer ([r31+36]) before the request text is rebuilt into it.
+[[midasm_hook]]
+address = 0x82E59744
+name = "Ao2dcLogEmitterBuf"
+registers = ["r31"]
+
+# Heap free sub_82D6EBD0, after its `mflr r12` (r3 block, r12 caller, r1 caller sp): records frees of tracked scratch buffers only.
+[[midasm_hook]]
+address = 0x82D6EBD4
+name = "Ao2dcTrackedFree"
+registers = ["r3", "r12", "r1"]
+
+# Emitter destructor sub_82E55868: `bl sub_82D68DF0` that frees the 512-byte scratch buffer [this+36] (r4). A sound
+# instance's property still points at it (src/main_hooks/emitter_buffer_guard.cpp); the free is deferred.
+[[midasm_hook]]
+address = 0x82E558DC
+name = "Ao2dcDeferEmitterBufferFree"
+registers = ["r4"]
+jump_address_on_true = 0x82E558E0

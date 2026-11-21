@@ -1,52 +1,173 @@
+diff --git a/include/rex/system/xam/save_gate.h b/include/rex/system/xam/save_gate.h
+new file mode 100644
+index 0000000..b44d653
+--- /dev/null
++++ b/include/rex/system/xam/save_gate.h
+@@ -0,0 +1,114 @@
++/**
++ * AO2DC Save Manager: the save-write gate of the content manager (header only, no dependencies, so
++ * it can be tested on its own).
++ *
++ * Every operation that creates, opens, closes, deletes or writes the header or thumbnail of a save
++ * or profile package runs inside a SaveMutationScope. A snapshot (a consistent copy of the saves)
++ * can only begin when no such operation is running and no such package is open; from then until the
++ * owner releases it, new operations wait. The gate is never released by a timer: only End(token)
++ * with the owner's token does, and only one snapshot can exist at a time.
++ */
++
++#pragma once
++
++#include <condition_variable>
++#include <cstddef>
++#include <cstdint>
++#include <mutex>
++
++namespace rex::system::xam {
++
++class SaveGate {
++ public:
++  // Start of a mutating operation. Waits while a snapshot is active unless `wait` is false (used for
++  // closing, which only needs to be counted).
++  void Enter(bool wait = true) {
++    std::unique_lock<std::mutex> lock(mutex_);
++    if (wait) {
++      cv_.wait(lock, [this] { return !active_; });
++    }
++    ++operations_;
++  }
++
++  void Leave() {
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      --operations_;
++    }
++    cv_.notify_all();
++  }
++
++  // One attempt to begin a snapshot. `open_save_packages` is the number of save/profile packages
++  // open right now (read by the caller under the lock that guards the open list). Returns the
++  // owner token, or 0: not at a boundary yet (an operation or an open package), or, with
++  // *overlapped set, another snapshot is active.
++  uint64_t TryBegin(size_t open_save_packages, bool* overlapped = nullptr) {
++    if (overlapped) {
++      *overlapped = false;
++    }
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (active_) {
++      if (overlapped) {
++        *overlapped = true;
++      }
++      return 0;
++    }
++    if (operations_ != 0 || open_save_packages != 0) {
++      return 0;
++    }
++    active_ = true;
++    token_ = next_token_++;
++    return token_;
++  }
++
++  // Releases the gate for its owner. Anything else (wrong or stale token, no snapshot) changes
++  // nothing and returns false.
++  bool End(uint64_t token) {
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      if (!active_ || token == 0 || token != token_) {
++        return false;
++      }
++      active_ = false;
++      token_ = 0;
++    }
++    cv_.notify_all();
++    return true;
++  }
++
++  bool active() const {
++    std::lock_guard<std::mutex> lock(mutex_);
++    return active_;
++  }
++
++ private:
++  mutable std::mutex mutex_;
++  std::condition_variable cv_;
++  bool active_ = false;
++  uint64_t token_ = 0;
++  uint64_t next_token_ = 1;
++  size_t operations_ = 0;
++};
++
++// Counts one mutating operation for its lifetime (does nothing when `counted` is false, e.g. for
++// marketplace content, which snapshots do not cover).
++class SaveMutationScope {
++ public:
++  SaveMutationScope(SaveGate& gate, bool counted, bool wait = true) : gate_(counted ? &gate : nullptr) {
++    if (gate_) {
++      gate_->Enter(wait);
++    }
++  }
++  ~SaveMutationScope() {
++    if (gate_) {
++      gate_->Leave();
++    }
++  }
++  SaveMutationScope(const SaveMutationScope&) = delete;
++  SaveMutationScope& operator=(const SaveMutationScope&) = delete;
++
++ private:
++  SaveGate* gate_;
++};
++
++}  // namespace rex::system::xam
 diff --git a/include/rex/system/xam/content_manager.h b/include/rex/system/xam/content_manager.h
-index 949d185..8107084 100644
+index 949d185..39fb8d5 100644
 --- a/include/rex/system/xam/content_manager.h
 +++ b/include/rex/system/xam/content_manager.h
-@@ -11,7 +11,11 @@
+@@ -11,10 +11,13 @@
  
  #pragma once
  
-+#include <atomic>
 +#include <chrono>
-+#include <condition_variable>
  #include <memory>
-+#include <mutex>
  #include <string>
  #include <unordered_map>
  #include <vector>
-@@ -182,6 +186,15 @@ class ContentManager {
++
++#include <rex/system/xam/save_gate.h>
+ #include <rex/math.h>
+ #include <rex/memory.h>
+ #include <rex/string/key.h>
+@@ -182,6 +185,18 @@ class ContentManager {
    // and writes a .header file for XAM enumeration.
    X_RESULT InstallContent(const std::filesystem::path& package_path);
  
 +  // Save-write coordination (AO2DC Save Manager). BeginSaveSnapshot() succeeds only at a verified
-+  // boundary: at that instant no content package other than marketplace content (saves, profile
-+  // data) is open, and until EndSaveSnapshot() every attempt to create, open, delete or write the
-+  // header or thumbnail of such a package waits, so no save can start being written while a
-+  // snapshot is copied. Returns false when no such boundary came within `timeout` (a package
-+  // stayed open); nothing is blocked then.
-+  bool BeginSaveSnapshot(std::chrono::milliseconds timeout);
-+  void EndSaveSnapshot();
++  // boundary: no content package other than marketplace content (saves, profile data) is open and
++  // no create/open/close/delete/header/thumbnail operation on one is running. It returns a non-zero
++  // owner token and from then until EndSaveSnapshot(token) every such operation waits, so nothing
++  // can start writing while a snapshot is copied. The gate is never released by a timer: only the
++  // owner's EndSaveSnapshot(token) does. Returns 0 when no boundary came within `timeout` (a
++  // package stayed open; nothing is blocked then) or, with *overlapped set, because another
++  // snapshot is active (overlapping snapshots are rejected).
++  uint64_t BeginSaveSnapshot(std::chrono::milliseconds timeout, bool* overlapped = nullptr);
++  // Releases the gate. Returns false (and changes nothing) unless `token` is the active owner's.
++  bool EndSaveSnapshot(uint64_t token);
 +
   private:
    std::filesystem::path ResolvePackageRoot(uint64_t xuid, XContentType content_type,
                                             uint32_t title_id = -1);
-@@ -196,6 +209,14 @@ class ContentManager {
+@@ -196,6 +211,10 @@ class ContentManager {
    ContentPackage* DetachPackage(std::unordered_map<string::string_key_case, ContentPackage*,
                                                     string::string_key_case::Hash>::iterator it);
  
-+  // Blocks while a save snapshot is active (marketplace content is never blocked).
-+  void WaitForSaveSnapshot(XContentType content_type);
 +  size_t OpenSavePackageCountLocked() const;
 +
-+  std::mutex snapshot_mutex_;
-+  std::condition_variable snapshot_cv_;
-+  std::atomic<bool> snapshot_active_{false};
++  SaveGate save_gate_;  // save-write coordination, see save_gate.h
 +
    KernelState* kernel_state_;
    std::filesystem::path root_path_;
  
 diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
-index bd6c797..21dfaca 100644
+index bd6c797..d30ee43 100644
 --- a/src/system/xam/content_manager.cpp
 +++ b/src/system/xam/content_manager.cpp
 @@ -12,6 +12,7 @@
@@ -61,7 +182,7 @@ index bd6c797..21dfaca 100644
  
  X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGATE_DATA data,
                                                  uint32_t license_mask) {
-+  WaitForSaveSnapshot(data.content_type);
++  SaveMutationScope save_scope(save_gate_, data.content_type != XContentType::kMarketplaceContent);
    if (data.title_id == uint32_t(-1)) {
      data.title_id = kernel_state_->title_id();
    }
@@ -69,102 +190,62 @@ index bd6c797..21dfaca 100644
  
  X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_t xuid,
                                         const XCONTENT_AGGREGATE_DATA& data) {
-+  WaitForSaveSnapshot(data.content_type);
++  SaveMutationScope save_scope(save_gate_, data.content_type != XContentType::kMarketplaceContent);
    {
      auto global_lock = global_critical_region_.Acquire();
      if (open_packages_.count(string::string_key_case(root_name))) {
-@@ -274,12 +277,18 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
-   auto package = ResolvePackage(root_name, xuid, data);
-   assert_not_null(package);
- 
--  {
--    auto global_lock = global_critical_region_.Acquire();
--    if (open_packages_.count(string::string_key_case(root_name))) {
--      return X_ERROR_ALREADY_EXISTS;
-+  for (;;) {
-+    {
-+      auto global_lock = global_critical_region_.Acquire();
-+      if (open_packages_.count(string::string_key_case(root_name))) {
-+        return X_ERROR_ALREADY_EXISTS;
-+      }
-+      if (!snapshot_active_ || data.content_type == XContentType::kMarketplaceContent) {
-+        open_packages_.insert({string::string_key_case::create(root_name), package.release()});
-+        break;
-+      }
-     }
--    open_packages_.insert({string::string_key_case::create(root_name), package.release()});
-+    WaitForSaveSnapshot(data.content_type);  // a snapshot began meanwhile: wait for it to end
-   }
-   return X_ERROR_SUCCESS;
- }
-@@ -287,6 +296,7 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
+@@ -287,6 +290,7 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
  X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t xuid,
                                       const XCONTENT_AGGREGATE_DATA& data,
                                       uint32_t& content_license) {
-+  WaitForSaveSnapshot(data.content_type);
++  SaveMutationScope save_scope(save_gate_, data.content_type != XContentType::kMarketplaceContent);
    {
      auto global_lock = global_critical_region_.Acquire();
      if (open_packages_.count(string::string_key_case(root_name))) {
-@@ -304,12 +314,18 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t
-       data.file_name(), xuid, kernel_state_->title_id(), data.content_type));
-   content_license = package->GetPackageLicense();
- 
--  {
--    auto global_lock = global_critical_region_.Acquire();
--    if (open_packages_.count(string::string_key_case(root_name))) {
--      return X_ERROR_ALREADY_EXISTS;
-+  for (;;) {
-+    {
-+      auto global_lock = global_critical_region_.Acquire();
-+      if (open_packages_.count(string::string_key_case(root_name))) {
-+        return X_ERROR_ALREADY_EXISTS;
-+      }
-+      if (!snapshot_active_ || data.content_type == XContentType::kMarketplaceContent) {
-+        open_packages_.insert({string::string_key_case::create(root_name), package.release()});
-+        break;
-+      }
-     }
--    open_packages_.insert({string::string_key_case::create(root_name), package.release()});
-+    WaitForSaveSnapshot(data.content_type);
-   }
-   return X_ERROR_SUCCESS;
+@@ -315,6 +319,7 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t
  }
-@@ -350,6 +366,7 @@ X_RESULT ContentManager::GetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
+ 
+ X_RESULT ContentManager::CloseContent(const std::string_view root_name) {
++  SaveMutationScope save_scope(save_gate_, true, false);  // counted until the delete ends
+   ContentPackage* package = nullptr;
+   {
+     auto global_lock = global_critical_region_.Acquire();
+@@ -350,6 +355,7 @@ X_RESULT ContentManager::GetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
  
  X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
                                               std::vector<uint8_t> buffer) {
-+  WaitForSaveSnapshot(data.content_type);
++  SaveMutationScope save_scope(save_gate_, data.content_type != XContentType::kMarketplaceContent);
    auto global_lock = global_critical_region_.Acquire();
    auto package_path = ResolvePackagePath(xuid, data);
    std::filesystem::create_directories(package_path);
-@@ -365,6 +382,7 @@ X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
+@@ -365,6 +371,7 @@ X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
  }
  
  X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data) {
-+  WaitForSaveSnapshot(data.content_type);
++  SaveMutationScope save_scope(save_gate_, data.content_type != XContentType::kMarketplaceContent);
    auto global_lock = global_critical_region_.Acquire();
  
    if (IsContentOpen(data)) {
-@@ -407,6 +425,7 @@ X_RESULT ContentManager::UnmountContent(uint64_t xuid, const XCONTENT_AGGREGATE_
+@@ -392,6 +399,7 @@ X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_D
+ }
+ 
+ X_RESULT ContentManager::UnmountContent(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data) {
++  SaveMutationScope save_scope(save_gate_, true, false);  // counted until the delete ends
+   ContentPackage* package = nullptr;
+   {
+     auto global_lock = global_critical_region_.Acquire();
+@@ -407,6 +415,7 @@ X_RESULT ContentManager::UnmountContent(uint64_t xuid, const XCONTENT_AGGREGATE_
  
  X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
                                                   const XCONTENT_AGGREGATE_DATA& data) {
-+  WaitForSaveSnapshot(data.content_type);
++  SaveMutationScope save_scope(save_gate_, data.content_type != XContentType::kMarketplaceContent);
    // Unmount phase: tolerant of not-mounted state
    ContentPackage* package = nullptr;
    {
-@@ -569,6 +588,52 @@ static X_RESULT ExtractEntry(rex::filesystem::Entry* entry,
+@@ -569,6 +578,40 @@ static X_RESULT ExtractEntry(rex::filesystem::Entry* entry,
    return X_ERROR_SUCCESS;
  }
  
-+void ContentManager::WaitForSaveSnapshot(XContentType content_type) {
-+  if (content_type == XContentType::kMarketplaceContent) {
-+    return;
-+  }
-+  std::unique_lock<std::mutex> lock(snapshot_mutex_);
-+  snapshot_cv_.wait(lock, [this] { return !snapshot_active_; });
-+}
-+
 +size_t ContentManager::OpenSavePackageCountLocked() const {
 +  size_t count = 0;
 +  for (const auto& it : open_packages_) {
@@ -175,32 +256,28 @@ index bd6c797..21dfaca 100644
 +  return count;
 +}
 +
-+bool ContentManager::BeginSaveSnapshot(std::chrono::milliseconds timeout) {
++uint64_t ContentManager::BeginSaveSnapshot(std::chrono::milliseconds timeout, bool* overlapped) {
 +  const auto deadline = std::chrono::steady_clock::now() + timeout;
 +  for (;;) {
 +    {
-+      // The check and the flag are one step under the same lock that guards open_packages_, so a
-+      // package is either already counted here or sees the flag when it tries to open.
++      // The open-package count is read under the lock that guards open_packages_; operations on
++      // packages are counted by the gate itself, so a package or operation is either seen here or
++      // waits on the gate.
 +      auto global_lock = global_critical_region_.Acquire();
-+      if (OpenSavePackageCountLocked() == 0) {
-+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
-+        snapshot_active_ = true;
-+        return true;
++      const uint64_t token = save_gate_.TryBegin(OpenSavePackageCountLocked(), overlapped);
++      if (token != 0 || (overlapped && *overlapped)) {
++        return token;
 +      }
 +    }
 +    if (std::chrono::steady_clock::now() >= deadline) {
-+      return false;
++      return 0;
 +    }
 +    std::this_thread::sleep_for(std::chrono::milliseconds(5));
 +  }
 +}
 +
-+void ContentManager::EndSaveSnapshot() {
-+  {
-+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
-+    snapshot_active_ = false;
-+  }
-+  snapshot_cv_.notify_all();
++bool ContentManager::EndSaveSnapshot(uint64_t token) {
++  return save_gate_.End(token);
 +}
 +
  X_RESULT ContentManager::InstallContent(const std::filesystem::path& package_path) {

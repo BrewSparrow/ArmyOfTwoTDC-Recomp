@@ -72,35 +72,67 @@ constexpr uint32_t kExpectedFrameTime = 0x84086CC0u;
 constexpr uint32_t kExpectedFrameTime = 0x84076CC0u;
 #endif
 
-// 60 FPS mode is all or nothing. The pacer constructor, calibration step, flip interval and the
-// settings/calibration writes below all follow one decision, made on first use from values that do
-// not depend on call order: the requested rate must be above 30 and the display mode the game
-// calibrates against (video_mode_refresh_rate) must equal it, so the game's own calibration
-// reference is 2/rate (see Ao2dcFramePacer). Otherwise nothing is changed and the game runs at 30.
-std::atomic<int> g_mode60{0};  // 0 undecided, 1 on, 2 off
+// 60 FPS mode is all or nothing and is restart-only. The pacer constructor, calibration step, flip
+// interval and the settings/calibration writes below all follow one decision, latched the first
+// time any of them runs (game start: the configuration is loaded, the guest has not timed anything
+// yet), so the F4 menu can never change the running game. The setting must be above 30 and the
+// display mode the game calibrates against (video_mode_refresh_rate) must equal it, so the game's
+// own calibration reference is 2/rate (see Ao2dcFramePacer). Otherwise nothing is changed and the
+// game runs at 30. Every timing hook reads EffectiveRate(), never the setting.
+std::once_flag g_latch_once;
+std::atomic<int> g_latched{0};  // 0 undecided, 1 60 FPS mode on, 2 off
+int g_latched_rate = 30;        // written once inside g_latch_once, read after it
+int g_requested_rate = 0;       // the setting at that moment (for the pending-change log)
+int g_flip_interval = 0;        // diagnostic ao2dc_flip_interval, latched with the rate
 
-int DecideMode60() {
-  const int32_t target = REXCVAR_GET(ao2dc_frame_rate);
-  const double refresh = REXCVAR_GET(video_mode_refresh_rate);
-  const bool ok = target > 30 && std::fabs(refresh - double(target)) < 0.5;
-  int expected = 0;
-  if (g_mode60.compare_exchange_strong(expected, ok ? 1 : 2)) {
+void Latch() {
+  std::call_once(g_latch_once, [] {
+    const int32_t target = REXCVAR_GET(ao2dc_frame_rate);
+    const double refresh = REXCVAR_GET(video_mode_refresh_rate);
+    const bool ok = target > 30 && std::fabs(refresh - double(target)) < 0.5;
+    g_requested_rate = target;
+    g_flip_interval = REXCVAR_GET(ao2dc_flip_interval);
+    g_latched_rate = ok ? target : 30;
     if (ok)
-      REXLOG_INFO("Frame rate: {} FPS mode on (display mode {:.2f} Hz, pacer, calibration and "
-                  "flip hooks together)", target, refresh);
-    else
-      REXLOG_WARN("Frame rate: {} FPS mode OFF, nothing changed: video_mode_refresh_rate is "
-                  "{:.2f} Hz, it must equal ao2dc_frame_rate (above 30). The game runs at 30.",
+      REXLOG_INFO("Frame rate: ACTIVE {} FPS (latched at start: pacer, calibration and flip hooks "
+                  "together; display mode {:.2f} Hz). Changes in F4 apply at the next launch.",
                   target, refresh);
-  }
-  return g_mode60.load();
+    else if (target > 30)
+      REXLOG_WARN("Frame rate: ACTIVE 30 FPS, nothing changed: ao2dc_frame_rate is {} but "
+                  "video_mode_refresh_rate is {:.2f} Hz, it must be equal. Changes apply at the "
+                  "next launch.", target, refresh);
+    else
+      REXLOG_INFO("Frame rate: ACTIVE 30 FPS (latched at start). Changes in F4 apply at the next "
+                  "launch.");
+    g_latched = ok ? 1 : 2;
+  });
+}
+
+// The frame rate every timing hook uses: latched at start, 30 when 60 FPS mode is off.
+int EffectiveRate() {
+  Latch();
+  return g_latched_rate;
 }
 
 bool Active() {
-  if (REXCVAR_GET(ao2dc_frame_rate) <= 30)
-    return false;
-  const int state = g_mode60.load();
-  return (state ? state : DecideMode60()) == 1;
+  Latch();
+  return g_latched == 1;
+}
+
+// Logs, once per change, that the setting no longer matches what this run latched.
+void LogPendingChange() {
+  static std::atomic<int> last{-1};
+  Latch();
+  const int now = REXCVAR_GET(ao2dc_frame_rate);
+  const int previous = last.exchange(now);
+  if (previous == -1 ? now == g_requested_rate : previous == now)
+    return;
+  if (now == g_requested_rate)
+    REXLOG_INFO("Frame rate: setting is back to {}; nothing pending, active {} FPS", now,
+                g_latched_rate);
+  else
+    REXLOG_INFO("Frame rate: setting changed to {} - PENDING, applies at the next launch; active "
+                "stays {} FPS", now, g_latched_rate);
 }
 
 float LoadFloat(uint8_t* p) {
@@ -153,9 +185,7 @@ void LogBuildMarker(const char* where) {
 // sub_82EED220 at 0x82EED238, right after `lwz r29,44(r3)`: r3 = pacer, r29 = its settings.
 // Runs every frame for each pacer, before the pacer reads its settings or calibrates.
 void Ao2dcFramePacer(PPCRegister& r3, PPCRegister& r29) {
-  static std::atomic<bool> reported{false};
-  if (!reported.exchange(true))
-    REXLOG_INFO("Frame rate: ao2dc_frame_rate = {}", REXCVAR_GET(ao2dc_frame_rate));
+  LogPendingChange();
   if (REXCVAR_GET(ao2dc_trace_game_time) && r3.u32) {
     // First calls of the pacer tick, before any filter: which pacers tick, their mode and scale.
     static std::atomic<int> entries{0};
@@ -240,7 +270,7 @@ void Ao2dcFramePacer(PPCRegister& r3, PPCRegister& r29) {
   if (!r3.u32 || !r29.u32 || !Active())
     return;
   auto* memory = rex::Runtime::instance()->memory();
-  const int32_t target = REXCVAR_GET(ao2dc_frame_rate);
+  const int32_t target = EffectiveRate();
 
   // Calibration reference: 1/target instead of 1/30 (see Ao2dcCalibrationStep).
   uint8_t* expected = memory->TranslateVirtual(kExpectedFrameTime);
@@ -320,7 +350,7 @@ void Ao2dcCalibrationStep(PPCRegister& r11) {
 void Ao2dcPacerConstruct(PPCRegister& r5) {
   if (!Active() || r5.u32 != 30)
     return;
-  const uint32_t rate = uint32_t(REXCVAR_GET(ao2dc_frame_rate));
+  const uint32_t rate = uint32_t(EffectiveRate());
   static std::atomic<int> logged{0};
   if (logged.fetch_add(1) < 4)
     REXLOG_INFO("Frame pacer created at {} instead of 30", rate);
@@ -333,8 +363,8 @@ void Ao2dcFlipInterval(PPCRegister& r29) {
   if (Active() && r29.u32 > 1)
     r29.u64 = 1;
   // Diagnostic: show a frame only every Nth display refresh, leaving the refresh rate alone.
-  if (Active() && REXCVAR_GET(ao2dc_flip_interval) > 0)
-    r29.u64 = uint32_t(REXCVAR_GET(ao2dc_flip_interval));
+  if (Active() && g_flip_interval > 0)
+    r29.u64 = uint32_t(g_flip_interval);
 }
 
 // Game-time diagnostic (ao2dc_trace_game_time). Path of the tick duration (pacer+432 = 1/rate s):
@@ -384,7 +414,7 @@ void Ao2dcGameTimeStep(PPCRegister& r3, PPCRegister& r30, PPCRegister& f1) {
   const double wall = std::chrono::duration<double>(now - start).count();
   if (wall < 1.0)
     return;
-  const int32_t target = REXCVAR_GET(ao2dc_frame_rate) > 30 ? REXCVAR_GET(ao2dc_frame_rate) : 30;
+  const int32_t target = EffectiveRate();
   for (int i = 0; i < 2; ++i) {
     const Slot& s = slots[i];
     if (!s.updates) {

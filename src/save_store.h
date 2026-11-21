@@ -18,6 +18,7 @@
 // interrupted; they run only before the game starts (RunLaunchTasks).
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -41,6 +42,7 @@ struct Result {
   bool ok = false;
   std::string message;
   std::string id;  // backup folder name created or used
+  bool unresolved = false;  // a failed rollback left old saves in a recovery folder (UnresolvedRecovery)
 };
 
 struct BackupInfo {
@@ -76,6 +78,7 @@ struct Context {
   std::string build;  // build information stored in manifests
   Log log;
   FaultHook fault;
+  const std::atomic<bool>* cancel = nullptr;  // set by the app at shutdown: backups stop between files
 };
 
 // <Saved Games>\BrewSparrow\ArmyOfTwoTDC\Backups, empty if Windows cannot resolve the folder.
@@ -113,8 +116,28 @@ bool CancelPending(const Pending& pending);
 // the queued items. Returns one status line per step (also stored for the Save Manager).
 std::vector<std::string> RunLaunchTasks(const Context& ctx);
 
+// Restore work folders (user_root\.ao2dc\restore-*) that are still there: a restore or its
+// rollback could not finish and its saved files are kept in them. While any exists no restore or
+// queued item runs and the game must not start (it would write saves over an unresolved state).
+// Every launch retries the rollback.
+std::vector<fs::path> UnresolvedRecovery(const fs::path& user_root);
+
 // Status lines from the last RunLaunchTasks, for display.
 std::vector<std::string> LastLaunchTaskLines(const fs::path& user_root);
+
+// Exclusive lock on a file, held for the life of the process (not tied to a thread; the OS drops it
+// when the process dies). One per installation: the game running with these saves.
+class InstanceLock {
+ public:
+  explicit InstanceLock(const fs::path& user_root);
+  ~InstanceLock();
+  InstanceLock(const InstanceLock&) = delete;
+  InstanceLock& operator=(const InstanceLock&) = delete;
+  bool acquired() const { return handle_ != nullptr; }
+
+ private:
+  void* handle_ = nullptr;
+};
 
 // One lock per installation (named by its user folder): "another instance runs with these saves"
 // and "an operation is running". Held for the object's lifetime.

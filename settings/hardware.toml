@@ -28,11 +28,12 @@ keybind_dpad_right = "4,Right"
 keybind_back = "Tab"
 keybind_start = "Escape"
 gpu_plugin = "xenos"
-readback_resolve = "fast"
+readback_resolve = "full"
 readback_memexport_fast = false
+execute_unclipped_draw_vs_on_cpu = true
 readback_resolve_formats = "38"
 ao2dc_dump_frame_at = 0
-render_target_path_d3d12 = "rov"
+render_target_path_d3d12 = "rtv"
 
 # The game's screen-space ambient occlusion renders as flickering horizontal stripes under
 # emulation; true replaces it with "no occlusion" (see HANDOFF "ReXGlue port").

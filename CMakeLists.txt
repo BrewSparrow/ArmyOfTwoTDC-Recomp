@@ -139,5 +139,8 @@ if(TARGET ao2dc_AO4_Main)
         src/main_hooks/filter_recorder.cpp
         src/main_hooks/mix_writer_probe.cpp
         src/main_hooks/centre_recorder.cpp
-        src/main_hooks/ping_capture.cpp)
+        src/main_hooks/ping_capture.cpp
+        src/main_hooks/stale_bind_guard.cpp
+        src/main_hooks/emitter_buffer_guard.cpp
+        src/main_hooks/fs_device_diag.cpp)
 endif()

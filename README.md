@@ -15,6 +15,10 @@ provides the Xbox 360 kernel, GPU (Direct3D 12), audio and input.
 
 This repository contains **no game code or data**. You need a legally owned copy of the game.
 
+**The game runs best with Title Update 1 installed.** Build with it (see
+[Optional: Title Update 1 and DLC](#optional-title-update-1-and-dlc)): the Chapter 18 and Chapter 35
+crash fixes below only exist in the Title Update 1 build.
+
 ## Windows setup video
 
 [Watch the Army of Two: The Devil's Cartel Windows setup guide on YouTube](https://www.youtube.com/watch?v=8CrIisg1oZI).
@@ -75,12 +79,16 @@ On top of the plain recompilation:
   with bounded catch-up (`ao2dc_catch_up_steps`, default 8) so game speed stays normal when the
   GPU cannot hold 60 (`src/main_hooks/frame_rate_hook.cpp`). It is all or nothing: it only turns on
   when `video_mode_refresh_rate` is 60 (the default), otherwise the game stays at 30 and the log
-  says why. Keep `readback_resolve = "fast"` (the default) - `"full"` costs too much at 60 FPS.
+  says why. Also set `readback_resolve = "fast"` (the shipped 30 FPS setting is `"full"`, which costs too much at 60 FPS).
 - **Save Manager** (`F6`) - a full-window screen, separate from `F4`: back up saved progress, restore
   a backup (confirmed, applied at the next start before any save is opened, with a recovery backup
   first) and import the saves of an older release. Backups live in
   `Saved Games\BrewSparrow\ArmyOfTwoTDC\Backups`, shared by all release folders. Details:
   `docs/SAVE_MANAGER.md`.
+- **Stale texture guard** - Chapter 35 (Narco Hell, Rooftop Rampage) used to stop with "Call to invalid or unregistered function at guest address 0x1A200154": a render job bound a texture object that had already been freed. `src/main_hooks/stale_bind_guard.cpp` treats such an object as "no texture" (the engine's default) instead of calling through it; live objects are untouched. Logged as "Stale texture bound" (first few, then powers of two). `ao2dc_guard_stale_bind = false` turns it off. Title Update 1 build only.
+- **Null filesystem device guard** - in Chapter 18 (Last Resort, Room Service) a job sometimes crashed with a read of guest address 0x0000000A: a sound request (a music file) was set up with a path buffer whose contents had been reused, so the device lookup returned nothing and the code read through it. `src/main_hooks/fs_device_diag.cpp` drops that request instead of crashing (logged as "Filesystem request with no device dropped"). `ao2dc_test_null_fs_device = true` forces the case for music requests to test it. Title Update 1 build only.
+- **Emitter buffer guard** - the cause of the Chapter 18 bad music path above (a corrupt `fb:<guid>,...` stream path, "BAD AT ENQUEUE", "no device"). A sound emitter builds the request text in its own 512-byte scratch buffer, a sound instance keeps a raw pointer to it, and the emitter's destructor (`sub_82E55868`) can free the buffer before the instance's next update (`sub_82E385F8`) copies the text; the allocator's free-list link then overwrites the first bytes of the path. `src/main_hooks/emitter_buffer_guard.cpp` delays that one free (hook at 0x82E558DC in `config/ao4_main_functions_tu1.toml`): buffers wait in a queue and are really freed after at least 64 later destructions and 250 ms (or 256 destructions in a burst, logged as "held only"), so nothing leaks. `ao2dc_guard_emitter_buffer = false` turns it off; the null filesystem device guard stays as a backstop. Title Update 1 build only. Checked with the same build and only this setting changed, 25 runs each: 0 corrupt with the guard, 5 corrupt without it; 0 corrupt in 16 more runs with diagnostics off (Chapter 18 x11, Chapter 35 x2, Chapter 18 at 60 FPS x3), normal quit flushes the log, 30 FPS gameplay stays at 30.00 FPS with game time equal to wall time. Not proven: why the destructor runs before the update only in some runs. Troubleshooting: `ao2dc_diag_fs_requests = true` logs the request text, the buffer's free and whether the update read a guard-held buffer.
+- **Frame-time diagnostics** - the log line "Perf frames" (every 5 s) gives p50/p95/p99/max of the real per-swap frame times, counts over 36.7/40/50 ms and the time spent waiting for resolve readbacks. `ao2dc_frame_trace = <file>` writes one line per swap (swap, host time, frame time, when the guest called VdSwap, delay until the GPU thread reached it, readback and memexport waits, GPU-thread idle time) for percentile analysis. Optional speed-up to test visually: `readback_resolve_formats = "37,38"` and `readback_resolve_small_bytes = 0` read back 4 resolves per frame instead of 13 (about 3.3 ms less GPU-thread waiting per frame); it is not the default because the black-line fix has not been re-checked with it.
 - **FPS counter** - "Show FPS counter" in the `F4` window (Display tab).
 - **Kernel fixes** - stale dispatch objects in reused memory (crash on `KeSetEvent`), instant
   storage-device selection.
@@ -148,7 +156,8 @@ version above. The build also prints them for every XEX it recompiles. Check the
 
 ### Optional: Title Update 1 and DLC
 
-Put Title Update 1 (`TU_12K22DB_000001C000000.000000000008B`, from your console) in
+**Recommended:** the game runs best with Title Update 1. Put Title Update 1
+(`TU_12K22DB_000001C000000.000000000008B`, from your console) in
 `title_update/` before building, and DLC packages (Hitmakers Pack, Online Pass and Overkill
 Edition content) in `dlc/`. Avatar items are not supported and online features do not work.
 [BUILDING.md](BUILDING.md) has the details. Neither folder is tracked or released.

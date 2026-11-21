@@ -28,11 +28,18 @@ only then renamed into place; a failed attempt leaves the existing backups alone
 ## Save-write coordination
 
 The game saves by opening a content package, writing, and closing it. **Back Up Saved Progress**
-asks the content manager for a *snapshot* (SDK patch 0014): it succeeds only at an instant when no
-save or profile package is open, and from then until the copy is verified any attempt to open, create
-or delete one waits. If no such instant comes within 3 seconds the backup is **queued** and runs the
-next time the game starts, before it opens any save file; the list shows it as Queued and as Complete
-only after it exists and has been verified.
+asks the content manager for a *snapshot* (SDK patch 0014, `save_gate.h`). It succeeds only at an
+instant when no save or profile package is open **and** no create, open, close, delete, header or
+thumbnail operation on one is running. The snapshot has an owner token; from then until that token
+releases it, every such operation waits, and a second snapshot is rejected. The gate is never opened
+by a timer: only the backup that owns it releases it (always, through a scope guard, also after an
+error), so saves are never written while files are being copied.
+
+If no such instant comes within 3 seconds the backup is **queued** and runs the next time the game
+starts, before it opens any save file. The list shows it as Queued, and as Complete only after it
+exists and has been verified. Closing the F6 screen during a backup does not stop it; reopening shows
+the same running state. When the game closes, a running backup stops at its next file (leaving no
+partial backup) and releases the gate before the runtime goes away.
 
 ## Restore and import
 
@@ -45,7 +52,21 @@ only after it exists and has been verified.
 - **Import From Older Release...** copies only the save data of the chosen older installation (its
   folder with `ao2dc_manifest.toml`, or its `user` folder) into a new backup; the original is only
   read. Close the older game first.
-- A second instance using the same saves is detected; it neither restores nor runs queued items.
+- **One game per saves folder.** A second copy started from the same release folder says so and
+  exits: two copies would write the same saves. (Other release folders have their own saves.)
+- **A rollback that cannot finish is never reported as done.** If a file cannot be put back (for
+  example another program holds it), the old files stay in `user\.ao2dc\restore-*\pre`, with the
+  journal and the verified recovery backup. No other restore or queued item runs and the game does
+  not start (a message names the folder) until the next start has completed the rollback.
+- The confirmation lists every profile the backup replaces, every profile that has saved progress
+  now, and warns about a backup profile that is not present in this installation. Nothing is
+  remapped to another profile.
+
+## Input
+
+While the screen is open, keyboard, mouse and pad belong to it, not the game (SDK patch 0015 gives
+every input driver, XInput included, a process-wide capture switch; the SDK's own overlay rules are
+unchanged).
 
 ## Tests
 
@@ -56,6 +77,9 @@ missing saves, corrupt backups, failed writes, interrupted restore recovery, que
 clang++ -std=c++20 -O1 tests/save_store_test.cpp src/save_store.cpp -o save_store_test.exe
 save_store_test.exe
 ```
+
+The test also runs the SDK's header-only save gate (concurrent writers against snapshots, owner
+tokens, overlap) and the rollback, cancel and lock failure paths.
 
 `AO2DC_TEST_BACKUPS_ROOT` redirects the backup folder for automated runs only.
 

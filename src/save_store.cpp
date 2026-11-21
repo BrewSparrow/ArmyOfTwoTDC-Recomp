@@ -541,6 +541,8 @@ Result CreateFrom(const Context& ctx, const fs::path& source_root, const std::st
     int index = 0;
     for (const std::string& rel : scope) {
       Fault(ctx, "copy:" + std::to_string(index++));
+      if (ctx.cancel && ctx.cancel->load())
+        throw std::runtime_error("cancelled (the game is closing)");
       const fs::path src = source_root / fs::path(rel);
       const fs::path dst = tmp / kFilesDir / fs::path(rel);
       FileEntry entry;
@@ -646,20 +648,67 @@ bool ParseJournal(const std::string& text, std::string* state, std::string* back
   return !state->empty();
 }
 
-void Rollback(const fs::path& user_root, const fs::path& work, const std::vector<JournalEntry>& entries) {
-  std::error_code ec;
+// Removes `rel`'s now-empty folders below <user_root>/<profile>/<title> (an empty leftover folder
+// would make the game refuse to create a save of that name again).
+void PruneEmptyFolders(const fs::path& user_root, const std::string& rel) {
+  const std::vector<std::string> parts = SplitPath(rel);
+  if (parts[0] == "achievements" || parts.size() < 3)
+    return;
+  const fs::path stop = user_root / parts[0] / parts[1];
+  fs::path dir = (user_root / fs::path(rel)).parent_path();
+  while (UnderRoot(stop, dir)) {
+    std::error_code ec;
+    if (!fs::remove(dir, ec))
+      break;  // not empty (or not removable): keep it
+    dir = dir.parent_path();
+  }
+}
+
+// Puts the files moved aside by a restore back. Returns what could not be done; when that is not
+// empty `work` (journal, pre/) is kept untouched so nothing is lost and the next start retries.
+std::vector<std::string> Rollback(const Context& ctx, const fs::path& work,
+                                  const std::vector<JournalEntry>& entries) {
+  std::vector<std::string> problems;
+  int n = 0;
   for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
-    const fs::path target = user_root / fs::path(it->rel);
+    Fault(ctx, "rollback:" + std::to_string(n++));
+    const fs::path target = ctx.user_root / fs::path(it->rel);
     const fs::path pre = work / "pre" / fs::path(it->rel);
+    std::error_code ec;
     if (fs::exists(pre, ec)) {
-      fs::remove(target, ec);
+      fs::remove(target, ec);  // the restored file, if it got that far
+      if (ec) {
+        problems.push_back("cannot remove " + it->rel + ": " + ec.message());
+        continue;
+      }
       fs::create_directories(target.parent_path(), ec);
+      if (ec) {
+        problems.push_back("cannot create the folder of " + it->rel + ": " + ec.message());
+        continue;
+      }
       fs::rename(pre, target, ec);
+      if (ec)
+        problems.push_back("cannot put back " + it->rel + ": " + ec.message());
     } else if (!it->had_old) {
       fs::remove(target, ec);  // a restored file that did not exist before
+      if (ec)
+        problems.push_back("cannot remove " + it->rel + ": " + ec.message());
+      else
+        PruneEmptyFolders(ctx.user_root, it->rel);
     }
   }
-  RemoveAll(work);
+  if (problems.empty())
+    RemoveAll(work);
+  return problems;
+}
+
+bool HasFiles(const fs::path& dir) {
+  std::error_code ec;
+  for (auto it = fs::recursive_directory_iterator(dir, ec); !ec && it != fs::recursive_directory_iterator();
+       it.increment(ec))
+    if (it->is_regular_file(ec))
+      return true;
+  return false;
 }
 
 std::vector<std::string> RecoverInterrupted(const Context& ctx) {
@@ -676,13 +725,26 @@ std::vector<std::string> RecoverInterrupted(const Context& ctx) {
     std::vector<JournalEntry> entries;
     const fs::path journal = e.path() / "journal.toml";
     if (!fs::is_regular_file(journal, ec) || !ParseJournal(ReadText(journal), &state, &backup, &entries)) {
-      RemoveAll(e.path());
-      lines.push_back("An interrupted restore had not changed any save file; its leftovers were removed.");
+      if (HasFiles(e.path() / "pre")) {
+        lines.push_back("A restore left files in " + Narrow(e.path() / "pre") +
+                        " but its journal cannot be read; nothing was touched. Resolve it by hand: copy them back "
+                        "or restore the recovery backup.");
+      } else {
+        RemoveAll(e.path());
+        lines.push_back("An interrupted restore had not changed any save file; its leftovers were removed.");
+      }
       continue;
     }
     if (state == "committing") {
-      Rollback(ctx.user_root, e.path(), entries);
-      lines.push_back("A restore of " + backup + " was interrupted; your previous saved progress was put back.");
+      const std::vector<std::string> problems = Rollback(ctx, e.path(), entries);
+      if (problems.empty()) {
+        lines.push_back("A restore of " + backup + " was interrupted; your previous saved progress was put back.");
+      } else {
+        lines.push_back("A restore of " + backup + " was interrupted and your previous saved progress could NOT be put "
+                        "back completely (" + problems.front() + "). Nothing was deleted: the old files are kept in " +
+                        Narrow(e.path() / "pre") + " and in the recovery backup made before the restore. It is "
+                        "retried at every start; the game does not start until it is resolved.");
+      }
     } else if (state == "committed") {
       RemoveAll(e.path());
       lines.push_back("A finished restore of " + backup + " was cleaned up.");
@@ -888,6 +950,13 @@ Result RestoreBackup(const Context& ctx, const std::string& backup_id) {
     return r;
   }
 
+  if (!UnresolvedRecovery(ctx.user_root).empty()) {
+    r.unresolved = true;
+    r.message = "An earlier restore could not be rolled back completely and is still unresolved: no restore runs "
+                "until it is. Nothing was changed.";
+    return r;
+  }
+
   // 2. Recovery backup of everything that exists now, verified before we go on.
   const std::vector<std::string> existing = ScopeFiles(ctx.user_root);
   std::string recovery_note;
@@ -959,26 +1028,22 @@ Result RestoreBackup(const Context& ctx, const std::string& backup_id) {
       fs::create_directories(target.parent_path());
       fs::rename(staged / fs::path(rel), target);
     }
-    // Folders that only held files of the old state (a save made after the backup) are removed:
-    // an empty leftover folder would make the game refuse to create a save of that name again.
-    for (const std::string& rel : old_rels) {
-      const std::vector<std::string> parts = SplitPath(rel);
-      if (parts[0] == "achievements")
-        continue;
-      const fs::path stop = ctx.user_root / parts[0] / parts[1];
-      fs::path dir = (ctx.user_root / fs::path(rel)).parent_path();
-      while (UnderRoot(stop, dir)) {
-        std::error_code remove_ec;
-        if (!fs::remove(dir, remove_ec))
-          break;  // not empty (or not removable): keep it
-        dir = dir.parent_path();
-      }
-    }
+    // Folders that only held files of the old state (a save made after the backup) are removed.
+    for (const std::string& rel : old_rels)
+      PruneEmptyFolders(ctx.user_root, rel);
     WriteTextAtomic(work / "journal.toml", FormatJournal("committed", backup_id, entries));
   } catch (const std::exception& e) {
-    Rollback(ctx.user_root, work, entries);
-    r.message = std::string("Restore failed (") + e.what() + "); your previous saved progress was put back." +
-                recovery_note;
+    const std::vector<std::string> problems = Rollback(ctx, work, entries);
+    if (problems.empty()) {
+      r.message = std::string("Restore failed (") + e.what() + "); your previous saved progress was put back." +
+                  recovery_note;
+    } else {
+      r.unresolved = true;
+      r.message = std::string("Restore failed (") + e.what() + ") and your previous saved progress could NOT be put "
+                  "back completely (" + problems.front() + "). Nothing was deleted: the old files are kept in " +
+                  Narrow(work / "pre") + "." + recovery_note + " It is retried at every start; the game does not "
+                  "start until it is resolved.";
+    }
     Say(ctx, "Save restore: " + r.message);
     return r;
   }
@@ -1068,6 +1133,27 @@ bool CancelPending(const Pending& pending) {
   return fs::remove(pending.file, ec);
 }
 
+std::vector<fs::path> UnresolvedRecovery(const fs::path& user_root) {
+  std::vector<fs::path> out;
+  std::error_code ec;
+  const fs::path base = user_root / kWorkDir;
+  if (!fs::is_directory(base, ec))
+    return out;
+  for (const auto& e : fs::directory_iterator(base, ec)) {
+    if (!e.is_directory(ec) || e.path().filename().string().rfind("restore-", 0) != 0)
+      continue;
+    // Only a restore that moved files (state "committing", or a journal that cannot be read next to
+    // saved files) is unresolved; finished and never-started ones are just cleaned up.
+    std::string state, backup;
+    std::vector<JournalEntry> entries;
+    const fs::path journal = e.path() / "journal.toml";
+    const bool readable = fs::is_regular_file(journal, ec) && ParseJournal(ReadText(journal), &state, &backup, &entries);
+    if (readable ? state == "committing" : HasFiles(e.path() / "pre"))
+      out.push_back(e.path());
+  }
+  return out;
+}
+
 std::vector<std::string> LastLaunchTaskLines(const fs::path& user_root) {
   std::vector<std::string> lines;
   std::istringstream in(ReadText(user_root / kWorkDir / "last-launch-tasks.txt"));
@@ -1083,6 +1169,11 @@ std::vector<std::string> LastLaunchTaskLines(const fs::path& user_root) {
 
 std::vector<std::string> RunLaunchTasks(const Context& ctx) {
   std::vector<std::string> lines = RecoverInterrupted(ctx);
+  if (!UnresolvedRecovery(ctx.user_root).empty()) {
+    lines.push_back("Queued backups and restores did not run: an earlier restore is unresolved.");
+    Say(ctx, "Save restore: " + lines.back());
+    return lines;
+  }
   const std::vector<Pending> pending = ListPending(ctx.user_root);
   for (const Pending& p : pending) {
     Result r;
@@ -1098,6 +1189,10 @@ std::vector<std::string> RunLaunchTasks(const Context& ctx) {
       fs::create_directories(PendingDir(ctx.user_root) / "failed", ec);
       fs::rename(p.file, PendingDir(ctx.user_root) / "failed" / p.file.filename(), ec);
     }
+    if (r.unresolved) {  // no further restore or backup while recovery is unresolved
+      lines.push_back("The remaining queued items did not run: the restore above is unresolved.");
+      break;
+    }
   }
   try {
     std::string text;
@@ -1111,6 +1206,20 @@ std::vector<std::string> RunLaunchTasks(const Context& ctx) {
 }
 
 // ---- lock and shell helpers ----------------------------------------------------------------
+
+InstanceLock::InstanceLock(const fs::path& user_root) {
+  std::error_code ec;
+  fs::create_directories(user_root / kWorkDir, ec);
+  const fs::path file = user_root / kWorkDir / "run.lock";
+  HANDLE h = CreateFileW(file.c_str(), GENERIC_READ | GENERIC_WRITE, 0 /* no sharing */, nullptr, OPEN_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
+  handle_ = h == INVALID_HANDLE_VALUE ? nullptr : h;
+}
+
+InstanceLock::~InstanceLock() {
+  if (handle_)
+    CloseHandle(static_cast<HANDLE>(handle_));
+}
 
 NamedLock::NamedLock(const char* kind, const fs::path& user_root) {
   std::error_code ec;

@@ -1,0 +1,18 @@
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index cf73a02..9b41269 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -576,6 +576,13 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
+ void MnkInputDriver::OnMouseMove(rex::ui::MouseEvent& e) {
+   if (!IsEnabled() || !has_focus_)
+     return;
++  // A screen owns the mouse (Save Manager): give the cursor back at once instead of waiting for
++  // the game's next input poll, then show it.
++  if (Captured() && mouse_captured_ && attached_window_) {
++    mouse_capture_requested_.store(false, std::memory_order_relaxed);
++    ReleaseMouseCaptureFromUIThread(attached_window_);
++    attached_window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
++  }
+   int32_t x = e.x();
+   int32_t y = e.y();
+   {
