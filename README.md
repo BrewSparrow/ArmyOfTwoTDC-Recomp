@@ -1,5 +1,7 @@
 # Army of Two: The Devil's Cartel - PC Recompilation
 
+[![Verified developer on RecompStore](https://recompstore.com/assets/press/verified-dark.svg)](https://recompstore.com/dev/brewsparrow)
+
 <p align="center">
   <img src="docs/ArmyofTwo_TheDevilsCartel.jpeg" alt="Army of Two: The Devil's Cartel cover art" width="300">
 </p>
