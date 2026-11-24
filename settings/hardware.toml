@@ -5,6 +5,11 @@ window_height = 720
 fullscreen = false
 video_mode_width = 1920
 video_mode_height = 1080
+
+# Output scaling: "bilinear" (default) or "fsr" (AMD FSR 1; needs a build with FidelityFX, which
+# build_from_dump.bat does by default). Restart after changing it.
+present_effect = "bilinear"
+
 mnk_mode = true
 mnk_mouse = true
 keybind_a = "Space,Return"

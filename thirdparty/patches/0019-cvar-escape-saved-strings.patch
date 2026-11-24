@@ -1,0 +1,39 @@
+diff --git a/src/core/cvar.cpp b/src/core/cvar.cpp
+index 228728d..6bec3a3 100644
+--- a/src/core/cvar.cpp
++++ b/src/core/cvar.cpp
+@@ -535,13 +535,24 @@ std::vector<std::string> ListModifiedFlags() {
+   return result;
+ }
+ 
++// Backslashes and quotes must be escaped, or a saved Windows path makes the file unreadable.
++static std::string EscapeTomlString(const std::string& value) {
++  std::string out;
++  for (char c : value) {
++    if (c == '\\' || c == '"')
++      out += '\\';
++    out += c;
++  }
++  return out;
++}
++
+ std::string SerializeToTOML() {
+   std::lock_guard lock(GetRegistryMutex());
+   std::string result;
+   for (const auto& entry : GetRegistryStorage()) {
+     if (entry.getter() != entry.default_value) {
+       if (entry.type == FlagType::String) {
+-        result += entry.name + " = \"" + entry.getter() + "\"\n";
++        result += entry.name + " = \"" + EscapeTomlString(entry.getter()) + "\"\n";
+       } else {
+         result += entry.name + " = " + entry.getter() + "\n";
+       }
+@@ -556,7 +567,7 @@ std::string SerializeToTOML(std::string_view category) {
+   for (const auto& entry : GetRegistryStorage()) {
+     if (entry.category == category && entry.getter() != entry.default_value) {
+       if (entry.type == FlagType::String) {
+-        result += entry.name + " = \"" + entry.getter() + "\"\n";
++        result += entry.name + " = \"" + EscapeTomlString(entry.getter()) + "\"\n";
+       } else {
+         result += entry.name + " = " + entry.getter() + "\n";
+       }

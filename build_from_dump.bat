@@ -12,6 +12,10 @@ set "ROOT=%CD%"
 set "ASSETS=%ROOT%\assets"
 set "BUILD_DIR=%ROOT%\out\build\win-amd64-release"
 set "PRESET=win-amd64-release"
+rem AMD FidelityFX (FSR upscaling, present_effect = fsr) is built in: CMake downloads the
+rem FidelityFX SDK from GitHub during configure. To build without it, run: set AO2DC_FSR=0
+set "CMAKE_FSR=-DREXGLUE_ENABLE_FIDELITYFX=ON"
+if "%AO2DC_FSR%"=="0" set "CMAKE_FSR=-DREXGLUE_ENABLE_FIDELITYFX=OFF"
 rem Tools such as the recompiler switch the console to UTF-8 (code page 65001); under it cmd.exe
 rem can no longer find labels in this file. Remember the code page and restore it after each tool.
 for /f "tokens=2 delims=:." %%c in ('chcp') do for /f %%d in ("%%c") do set "AO2DC_CP=%%d"
@@ -20,6 +24,23 @@ echo.
 echo === AO2DC-Recomp: build from your own dump ===
 echo Project: %ROOT%
 echo.
+
+rem ---------------------------------------------------------------- 0. folder path length
+rem The FidelityFX shader compiler (built for FSR) crashes with exit code 0xc0000409 when the project
+rem folder path is long (measured: fine up to 103 characters, crash at 104). Stop early with a clear
+rem message instead of failing deep inside the build. Not needed without FSR (set AO2DC_FSR=0);
+rem set AO2DC_ALLOW_LONG_PATH=1 to build anyway.
+set "ROOT_LEN=0"
+for /f %%L in ('powershell -NoProfile -Command "$env:ROOT.Length"') do set "ROOT_LEN=%%L"
+if %ROOT_LEN% GTR 96 if not "%AO2DC_FSR%"=="0" if not "%AO2DC_ALLOW_LONG_PATH%"=="1" (
+    echo ERROR: the project folder path is too long: %ROOT_LEN% characters, the limit is 96.
+    echo   !ROOT!
+    echo The FidelityFX shader compiler used for FSR crashes ^(exit code 0xc0000409^) in deep folders.
+    echo Move the whole project folder to a short path, for example C:\AO2DC-Recomp, and run this
+    echo script again. To build without FSR run "set AO2DC_FSR=0" first; to try anyway run
+    echo "set AO2DC_ALLOW_LONG_PATH=1".
+    goto :fail
+)
 
 rem ---------------------------------------------------------------- 1. input files
 echo [1/7] Checking the dump in assets\ ...
@@ -53,7 +74,8 @@ if defined BAD (
     echo ERROR: unsupported dump. These files do not match the supported release:!BAD!
     echo.
     echo Supported: Army of Two: The Devil's Cartel, Xbox 360 retail disc, Title ID 454109AB,
-    echo Media ID 60F8EF51, version 0.0.0.11, with no title update applied.
+    echo Media ID 60F8EF51, version 0.0.0.11, with no title update applied ^(the title update
+    echo goes into title_update\, not into assets\^).
     echo A different region or version, a title update, or a modified or damaged dump gives
     echo different hashes. Re-dump or re-extract the disc ^(see BUILDING.md^).
     echo Your files were not changed.
@@ -61,7 +83,8 @@ if defined BAD (
 )
 echo       Dump matches the supported release.
 
-rem Optional Title Update 1 package in title_update\ and DLC packages in dlc\ (see BUILDING.md).
+rem Title Update 1 is REQUIRED: its package must be in title_update\ (see BUILDING.md). DLC
+rem packages in dlc\ are optional.
 set "TU_FILE="
 set "TU_COUNT=0"
 if exist "%ROOT%\title_update\" for %%T in ("%ROOT%\title_update\*") do (
@@ -74,6 +97,14 @@ if %TU_COUNT% GTR 1 (
     echo ERROR: title_update\ must hold exactly one title update package. Remove the others.
     goto :fail
 )
+if not defined TU_FILE (
+    echo.
+    echo ERROR: Title Update 1 is missing. It is required, the build does not work without it.
+    echo Copy the package TU_12K22DB_000001C000000.000000000008B into
+    echo   %ROOT%\title_update\
+    echo See BUILDING.md, section "Title Update 1 and DLC".
+    goto :fail
+)
 if defined TU_FILE (
     set "AO2DC_HASH_FILE=!TU_FILE!"
     set "H="
@@ -83,12 +114,10 @@ if defined TU_FILE (
         echo ERROR: unsupported title update: !TU_FILE!
         echo   got SHA-256 !H!
         echo Only Title Update 1 ^(version 0.0.1.11, TU_12K22DB_000001C000000.000000000008B^) is
-        echo supported. Remove the file from title_update\ to build without the update.
+        echo supported. Replace the file in title_update\ with that exact package.
         goto :fail
     )
     echo       Title Update 1 found: the build includes it.
-) else (
-    echo       No title update in title_update\: building the disc version.
 )
 set "DLC_COUNT=0"
 if exist "%ROOT%\dlc\" for %%T in ("%ROOT%\dlc\*") do (
@@ -147,7 +176,7 @@ rem ---------------------------------------------------------------- 5. configur
 rem The generated module targets only exist once codegen has run, so the project is configured,
 rem codegen is built on its own, and the project is configured again before the full build.
 echo [5/7] Configuring and recompiling the game code (needs ~16 GB free RAM; this takes a while) ...
-cmake --preset %PRESET%
+cmake --preset %PRESET% %CMAKE_FSR%
 call :restorecp
 if errorlevel 1 (
     echo ERROR: CMake configure failed ^(see the messages above^).
@@ -162,7 +191,7 @@ if errorlevel 1 (
 
 rem ---------------------------------------------------------------- 6. compile
 echo [6/7] Compiling ...
-cmake --preset %PRESET%
+cmake --preset %PRESET% %CMAKE_FSR%
 call :restorecp
 if errorlevel 1 (
     echo ERROR: CMake configure after code generation failed.

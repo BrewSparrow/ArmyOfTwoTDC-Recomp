@@ -33,6 +33,12 @@ namespace {
 bool InImage(uint32_t a) {
   return (a >= 0x82000000u && a < 0x84400000u) || (a >= 0x89000000u && a < 0x89100000u);
 }
+
+// Code ranges (Title Update 1: AO4.Main and Engine.BuildInfo): where a virtual method can live.
+bool InMainCode(uint32_t a) {
+  return ((a >= 0x82CB0000u && a < 0x84060260u) || (a >= 0x89010000u && a < 0x8901FD63u)) &&
+         (a & 3u) == 0;
+}
 }  // namespace
 
 // sub_82E73770 (TU1) at 0x82E73794: r29 = the texture object handed to the bind.
@@ -42,8 +48,14 @@ void Ao2dcGuardStaleBind(PPCRegister& r29) {
     return;
   auto* mem = rex::Runtime::instance()->memory();
   const uint32_t first = rex::memory::load_and_swap<uint32_t>(mem->TranslateVirtual(obj));
-  if (InImage(first))
-    return;
+  if (InImage(first)) {
+    // A freed block can be reused by an object whose first word is a code address (seen in a
+    // 60 FPS test: first word 0x83552090 was code, so vtable[14] was an instruction word and the
+    // call crashed). The bind calls vtable[14] (offset 56): require that to be a code address.
+    const uint32_t method = rex::memory::load_and_swap<uint32_t>(mem->TranslateVirtual(first + 56u));
+    if (InMainCode(method))
+      return;
+  }
   static std::atomic<uint32_t> seen{0};
   const uint32_t n = seen.fetch_add(1) + 1;
   if (n <= 8 || (n & (n - 1)) == 0)  // the first few, then each power of two

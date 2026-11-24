@@ -17,9 +17,10 @@ provides the Xbox 360 kernel, GPU (Direct3D 12), audio and input.
 
 This repository contains **no game code or data**. You need a legally owned copy of the game.
 
-**The game runs best with Title Update 1 installed.** Build with it (see
-[Optional: Title Update 1 and DLC](#optional-title-update-1-and-dlc)): the Chapter 18 and Chapter 35
-crash fixes below only exist in the Title Update 1 build.
+**Title Update 1 is required.** Put it in `title_update/` before building (see
+[Title Update 1 and DLC](#title-update-1-and-dlc)). Builds without it are no longer supported: the
+Chapter 18 and Chapter 35 crash fixes below only exist in the Title Update 1 build, and
+`build_from_dump.bat` and CMake stop with an error when the update is missing.
 
 ## Windows setup video
 
@@ -73,8 +74,8 @@ On top of the plain recompilation:
   of whatever an earlier sound had left in it. The aim/zoom foley turned this into a loud burst.
   `ao2dc_xma_keep_valid` (SDK patch 0009, on by default) keeps the flag set when a pass wrote
   nothing. Run with `--ao2dc_xma_keep_valid=false` to go back to the old behaviour.
-  Listening tests with diagnostics off: the base disc is player-verified (Shooting Range on two
-  launches, then further into the mission); Title Update 1 is player-verified too.
+  Listening tests with diagnostics off: the Title Update 1 build is player-verified (Shooting Range
+  on two launches, then further into the mission).
 - **60 FPS (experimental)** - off by default (the original 30 FPS). Turn it on in the `F4` window
   (Display tab, "60 FPS (experimental)") or with `ao2dc_frame_rate = 60` in `settings/hardware.toml`;
   restart the game afterwards. It runs the game's own frame pacer and its tick-based systems at 60
@@ -82,6 +83,27 @@ On top of the plain recompilation:
   GPU cannot hold 60 (`src/main_hooks/frame_rate_hook.cpp`). It is all or nothing: it only turns on
   when `video_mode_refresh_rate` is 60 (the default), otherwise the game stays at 30 and the log
   says why. Also set `readback_resolve = "fast"` (the shipped 30 FPS setting is `"full"`, which costs too much at 60 FPS).
+- **FSR upscaling (optional)** - AMD FidelityFX Super Resolution 1 for the final image. The default is
+  still the plain bilinear scaling. Turn it on with `present_effect = "fsr"` in `settings/hardware.toml`
+  (a restart is needed); `present_effect = "bilinear"` turns it off again. `build_from_dump.bat` builds
+  with FidelityFX by default and CMake downloads the FidelityFX SDK from GitHub while it configures, so the
+  first configure needs an internet connection. To build without it, run `set AO2DC_FSR=0` in the Command
+  Prompt before the script (then keep `present_effect` at `bilinear`; FSR is not available
+  without FidelityFX). FSR only helps when the window is larger than the game's 1280x720 picture. Measured on one
+  PC (RX 7700 XT, 1920x1080 window): no visible frame-time cost at 30 FPS, and a sharper picture than bilinear. Only
+  `fsr` was tested here; `cas`, `fsr2` and `fsr3` are not tested and not supported by this project.
+- **Slower GPUs and handhelds (measured, not guaranteed)** - the one setting that helped on a very weak
+  GPU (a Ryzen integrated GPU with about 2 compute units, Chapter 41) is `readback_resolve = "fast"` in
+  `settings/hardware.toml`: 13.4 to 15.5 FPS. The other values from the shipped file (`readback_resolve_formats`,
+  `readback_memexport_fast`) must stay, and the file must be valid: since SDK patch 0019 "Save to config" in the
+  `F4` window escapes Windows paths, but an older save could have left a broken file that the game ignores
+  as a whole. Things that did not help there: anisotropic filtering off, a lower window size, `readback_resolve = "none"`
+  (the picture goes almost black because the auto-exposure needs the readbacks). The game always renders at 1280x720,
+  so `video_mode_width/height` do not lower the load. On that GPU about 68 ms of GPU work per frame is spread
+  over many passes (the main scene about 22 ms, a half-resolution particle pass about 8 ms); no single pass could be
+  cut for a large gain. CPU: with the game limited to 8 logical processors it ran 30 FPS smoothly (a Steam Deck has 8)
+  and 60 FPS at about 59; with 4 it holds about 30 FPS with frame-time spikes; with 2 it runs at about 7 FPS, even in the
+  menus. The CPU tests ran on a fast desktop core, so a real handheld may do worse.
 - **Save Manager** (`F6`) - a full-window screen, separate from `F4`: back up saved progress, restore
   a backup (confirmed, applied at the next start before any save is opened, with a recovery backup
   first) and import the saves of an older release. Backups live in
@@ -156,13 +178,16 @@ Target retail release (verify your dump matches):
 version above. The build also prints them for every XEX it recompiles. Check the hashes with
 `certutil -hashfile assets\AO4.Main.xex SHA1` (Windows) or `sha1sum assets/*.xex`.
 
-### Optional: Title Update 1 and DLC
+### Title Update 1 and DLC
 
-**Recommended:** the game runs best with Title Update 1. Put Title Update 1
-(`TU_12K22DB_000001C000000.000000000008B`, from your console) in
-`title_update/` before building, and DLC packages (Hitmakers Pack, Online Pass and Overkill
-Edition content) in `dlc/`. Avatar items are not supported and online features do not work.
-[BUILDING.md](BUILDING.md) has the details. Neither folder is tracked or released.
+**Required:** Title Update 1. Put it (`TU_12K22DB_000001C000000.000000000008B`, from your console) in
+`title_update/` before building. The build stops with an error when it is missing or is a different
+update; only Title Update 1 (version 0.0.1.11) is supported. The update is not part of the disc dump
+and stays out of `assets/`.
+
+**Optional:** DLC packages (Hitmakers Pack, Online Pass and Overkill Edition content) in `dlc/`. Avatar
+items are not supported and online features do not work. [BUILDING.md](BUILDING.md) has the details.
+Neither folder is tracked or released.
 
 ## Building
 
@@ -185,7 +210,8 @@ Alt+Tab releases the mouse.
 ## Settings
 
 `settings/hardware.toml` holds the runtime settings (graphics, input, the game-specific fixes).
-The `F4` window edits and saves the same file.
+The `F4` window edits and saves the same file. The output scaling is `present_effect`: `bilinear`
+(default) or `fsr` (see "FSR upscaling" above).
 
 ## Legal
 

@@ -20,7 +20,7 @@ include(cmake/apply_sdk_patches.cmake)
 set(REXSDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/rexglue-sdk")
 set(REXGLUE_ENABLE_TRACY OFF CACHE BOOL "" FORCE)
 
-# Optional Title Update 1: the update package exactly as copied from the console (for example
+# Title Update 1 (required): the update package exactly as copied from the console (for example
 # TU_12K22DB_000001C000000.000000000008B) in title_update/. The recompiler then loads each XEX with
 # the update's patch (UPDATE:\<name>.xexp, read straight from the package) and uses the update's
 # codegen hints; the game mounts the same package as UPDATE: at run time (src/ao2dc_app.h).
@@ -40,8 +40,8 @@ elseif(AO2DC_TU_COUNT EQUAL 1)
         message(FATAL_ERROR
             "Unsupported title update ${AO2DC_TU_FILES} (SHA-256 ${AO2DC_TU_HASH}).\n"
             "Only Title Update 1 (0.0.1.11, SHA-256 ${AO2DC_TU1_SHA256}) is supported: the "
-            "recompiler needs hook addresses made for that exact update. Remove the file to build "
-            "without the update.")
+            "recompiler needs hook addresses made for that exact update. Replace the file with that "
+            "exact package.")
     endif()
     set(AO2DC_TITLE_UPDATE_PACKAGE "${AO2DC_TU_FILES}")
     set(AO2DC_MAIN_HINTS "${CMAKE_CURRENT_SOURCE_DIR}/config/ao4_main_functions_tu1.toml")
@@ -50,7 +50,10 @@ elseif(AO2DC_TU_COUNT EQUAL 1)
         "\"${CMAKE_COMMAND}\" -E env \"REX_UPDATE_DATA_ROOT=${AO2DC_TITLE_UPDATE_PACKAGE}\"")
     message(STATUS "Title Update 1: ${AO2DC_TITLE_UPDATE_PACKAGE}")
 else()
-    message(STATUS "Title update: none (title_update/ is empty)")
+    message(FATAL_ERROR
+        "Title Update 1 is required but title_update/ is empty. Copy the package "
+        "TU_12K22DB_000001C000000.000000000008B (SHA-256 ${AO2DC_TU1_SHA256}) into title_update/. "
+        "See BUILDING.md.")
 endif()
 # Only rewritten when the content changes, so the recompiler reruns exactly when the choice does.
 configure_file("${AO2DC_MAIN_HINTS}" "${CMAKE_CURRENT_SOURCE_DIR}/config/ao4_main_functions_active.toml" COPYONLY)
